@@ -84,6 +84,9 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			console.log("[Sweep] Suppressing inline edit:", suppressionReason);
 			return undefined;
 		}
+		console.log(
+			`[Sweep] provider invoked req=${requestId} line=${position.line} char=${position.character}`,
+		);
 
 		const uri = document.uri.toString();
 		const filePath = document.uri.fsPath;
@@ -508,6 +511,12 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			return;
 		}
 		this.clearSuggestionQueue("accepted suggestion exhausted queue");
+		// VSCode does not auto-fire the inline-completion provider for the
+		// text change that an accept itself applies, so without an explicit
+		// trigger we get exactly one suggestion per editing session and then
+		// stall until the user types more. cursortab.nvim immediately asks
+		// for the next prediction after accept; mirror that here.
+		void vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
 	}
 
 	private clearInlineEdit(

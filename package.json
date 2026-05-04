@@ -128,10 +128,45 @@
 					"default": 0,
 					"description": "Unix timestamp (ms) until which autocomplete is snoozed (0 disables snooze)"
 				},
-				"sweep.localPort": {
+				"sweep.ollamaUrl": {
+					"type": "string",
+					"default": "http://localhost:11434",
+					"description": "Base URL of the Ollama server serving the sweep model"
+				},
+				"sweep.modelName": {
+					"type": "string",
+					"default": "sweepai/sweep-next-edit",
+					"description": "Ollama model name (alias) for the sweep next-edit model"
+				},
+				"sweep.numCtx": {
 					"type": "number",
-					"default": 8081,
-					"description": "Port for the local autocomplete server"
+					"default": 32768,
+					"description": "Ollama options.num_ctx. Sweep's GGUF is 32k; pinning 8k truncates real prompts and yields delete-only completions."
+				},
+				"sweep.keepAlive": {
+					"type": "string",
+					"default": "30m",
+					"description": "How long Ollama keeps the model resident after the last request"
+				},
+				"sweep.completionTimeoutMs": {
+					"type": "number",
+					"default": 60000,
+					"description": "Per-request timeout for Ollama generations (ms). First load with num_ctx=32k can take 20–40s; warm calls finish in 2–8s."
+				},
+				"sweep.diagRadius": {
+					"type": "number",
+					"default": 12,
+					"description": "Drop diagnostics whose line is more than N lines from the cursor (0 disables the filter)."
+				},
+				"sweep.broadBefore": {
+					"type": "number",
+					"default": 125,
+					"description": "Lines of broad file context to keep before the cursor (the leading <|file_sep|>{path} section)."
+				},
+				"sweep.broadAfter": {
+					"type": "number",
+					"default": 75,
+					"description": "Lines of broad file context to keep after the cursor."
 				}
 			}
 		}
@@ -153,6 +188,8 @@
 		"@biomejs/biome": "2.3.13",
 		"@types/bun": "1.3.7",
 		"@types/vscode": "1.108.1",
-		"@typescript/native-preview": "7.0.0-dev.20260127.1"
+		"@typescript/native-preview": "7.0.0-dev.20260127.1",
+		"@vscode/vsce": "^3.9.1",
+		"esbuild": "^0.28.0"
 	}
 }

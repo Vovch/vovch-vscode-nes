@@ -1,10 +1,13 @@
 # dependencies (bun install)
 node_modules
+# pnpm fallback when bun isn't available — not the canonical lockfile
+pnpm-lock.yaml
 
 # output
 out
 dist
 *.tgz
+*.vsix
 
 # code coverage
 coverage

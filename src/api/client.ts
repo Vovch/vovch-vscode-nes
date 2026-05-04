@@ -1,8 +1,9 @@
-import * as http from "node:http";
 import * as os from "node:os";
 import * as vscode from "vscode";
-import type { ZodType } from "zod";
-import type { LocalAutocompleteServer } from "~/services/local-server.ts";
+
+import { config } from "~/core/config.ts";
+import { MAX_TOKENS, STOP_TOKENS, TEMPERATURE } from "~/core/constants.ts";
+import type { OllamaServer } from "~/services/ollama-server.ts";
 import { toUnixPath } from "~/utils/path.ts";
 import {
 	isFileTooLarge,
@@ -13,11 +14,10 @@ import {
 	fuseAndDedupRetrievalSnippets,
 	truncateRetrievalChunk,
 } from "./retrieval-chunks.ts";
+import { loadWorkspaceRules } from "./rules.ts";
 import {
 	type AutocompleteRequest,
 	AutocompleteRequestSchema,
-	type AutocompleteResponse,
-	AutocompleteResponseSchema,
 	type AutocompleteResult,
 	type EditorDiagnostic,
 	type FileChunk,
@@ -25,6 +25,8 @@ import {
 	type RecentChange,
 	type UserAction,
 } from "./schemas.ts";
+import { buildAutocompleteResponse } from "./sweep-completion.ts";
+import { buildSweepPrompt } from "./sweep-prompt.ts";
 
 export interface AutocompleteInput {
 	document: vscode.TextDocument;
@@ -46,10 +48,11 @@ const MAX_CLIPBOARD_LINES = 20;
 const MAX_DIAGNOSTICS = 50;
 
 export class ApiClient {
-	private localServer: LocalAutocompleteServer;
+	private server: OllamaServer;
+	private idCounter = 0;
 
-	constructor(localServer: LocalAutocompleteServer) {
-		this.localServer = localServer;
+	constructor(server: OllamaServer) {
+		this.server = server;
 	}
 
 	async getAutocomplete(
@@ -66,7 +69,6 @@ export class ApiClient {
 		}
 
 		const requestData = await this.buildRequest(input);
-
 		const parsedRequest = AutocompleteRequestSchema.safeParse(requestData);
 		if (!parsedRequest.success) {
 			console.error(
@@ -76,66 +78,79 @@ export class ApiClient {
 			return null;
 		}
 
-		let response: AutocompleteResponse;
-		try {
-			await this.localServer.ensureServerRunning();
-		} catch (error) {
-			console.error("[Sweep] Failed to start local server:", error);
-			return null;
-		}
+		const prompt = buildSweepPrompt(parsedRequest.data, {
+			broadBefore: config.broadBefore,
+			broadAfter: config.broadAfter,
+			diagRadius: config.diagRadius,
+			rules: loadWorkspaceRules(input.document),
+		});
 
-		const localUrl = `${this.localServer.getServerUrl()}/backend/next_edit_autocomplete`;
+		const reqStarted = Date.now();
+		console.log(
+			`[Sweep] → /api/generate model=${config.modelName} num_ctx=${config.numCtx} num_predict=${MAX_TOKENS} prompt_chars=${prompt.prompt.length}`,
+		);
 		try {
-			response = await this.sendRequest(
-				JSON.stringify(parsedRequest.data),
-				localUrl,
-				AutocompleteResponseSchema,
+			const completion = await this.server.getClient().complete(
+				{
+					model: config.modelName,
+					prompt: prompt.prompt,
+					temperature: TEMPERATURE,
+					maxTokens: MAX_TOKENS,
+					stop: STOP_TOKENS,
+					numCtx: config.numCtx,
+					keepAlive: config.keepAlive,
+					timeoutMs: config.completionTimeoutMs,
+				},
 				signal,
 			);
-			this.localServer.reportSuccess();
+			this.server.reportSuccess();
+			const elapsed = ((Date.now() - reqStarted) / 1000).toFixed(2);
+			console.log(
+				`[Sweep] ← /api/generate ${elapsed}s prompt_eval=${completion.promptEvalCount ?? "?"} eval=${completion.evalCount ?? "?"} finish=${completion.finishReason} response_chars=${completion.text.length}`,
+			);
+
+			const id = `sweep-${Date.now()}-${++this.idCounter}`;
+			const response = buildAutocompleteResponse(completion, prompt, id);
+			if (!response) return null;
+
+			const decode = (i: number) =>
+				utf8ByteOffsetToUtf16Offset(documentText, i);
+			const result: AutocompleteResult = {
+				id: response.autocomplete_id,
+				startIndex: decode(response.start_index),
+				endIndex: decode(response.end_index),
+				completion: response.completion,
+				confidence: response.confidence,
+			};
+			// If the replacement starts before the cursor on the same line that
+			// contains it, anchor the start at the cursor and strip the matching
+			// prefix from the completion. InlineEditProvider.normalizeInlineResult
+			// otherwise collapses endIndex onto the cursor when it auto-trims the
+			// pre-cursor prefix, leaving the line's original tail (e.g. a stray
+			// `)`) in place.
+			const cursorOffset = input.document.offsetAt(input.position);
+			if (result.startIndex < cursorOffset && cursorOffset <= result.endIndex) {
+				const prefix = documentText.slice(result.startIndex, cursorOffset);
+				if (result.completion.startsWith(prefix)) {
+					result.startIndex = cursorOffset;
+					result.completion = result.completion.slice(prefix.length);
+				}
+			}
+			if (result.completion.length === 0) return null;
+			return [result];
 		} catch (error) {
+			const elapsed = ((Date.now() - reqStarted) / 1000).toFixed(2);
 			if ((error as Error).name === "AbortError") {
+				console.log(`[Sweep] ← /api/generate aborted after ${elapsed}s`);
 				return null;
 			}
-			console.error("[Sweep] Local API request failed:", error);
-			this.localServer.reportFailure();
+			console.error(
+				`[Sweep] ← /api/generate failed after ${elapsed}s:`,
+				(error as Error).message,
+			);
+			this.server.reportFailure();
 			return null;
 		}
-
-		const decodeOffset = requestData.use_bytes
-			? (index: number) => utf8ByteOffsetToUtf16Offset(documentText, index)
-			: (index: number) => index;
-
-		const completions =
-			response.completions && response.completions.length > 0
-				? response.completions
-				: [
-						{
-							autocomplete_id: response.autocomplete_id,
-							start_index: response.start_index,
-							end_index: response.end_index,
-							completion: response.completion,
-							confidence: response.confidence,
-						},
-					];
-
-		const results = completions
-			.map((completion): AutocompleteResult => {
-				return {
-					id: completion.autocomplete_id,
-					startIndex: decodeOffset(completion.start_index),
-					endIndex: decodeOffset(completion.end_index),
-					completion: completion.completion,
-					confidence: completion.confidence,
-				};
-			})
-			.filter((result) => result.completion.length > 0);
-
-		if (results.length === 0) {
-			return null;
-		}
-
-		return results;
 	}
 
 	private async buildRequest(
@@ -174,7 +189,7 @@ export class ApiClient {
 			cursor_position: utf8ByteOffsetAt(document, position),
 			recent_changes: recentChangesText,
 			changes_above_cursor: true,
-			multiple_suggestions: true,
+			multiple_suggestions: false,
 			file_chunks: fileChunks,
 			retrieval_chunks: retrievalChunks,
 			editor_diagnostics: editorDiagnostics,
@@ -456,104 +471,5 @@ export class ApiClient {
 		return (
 			vscode.workspace.getWorkspaceFolder(document.uri)?.name || "untitled"
 		);
-	}
-
-	private sendRequest<T>(
-		body: string,
-		url: string,
-		schema: ZodType<T>,
-		signal?: AbortSignal,
-	): Promise<T> {
-		return new Promise((resolve, reject) => {
-			let settled = false;
-			const finish = (fn: () => void) => {
-				if (settled) return;
-				settled = true;
-				cleanup();
-				fn();
-			};
-
-			const parsedUrl = new URL(url);
-			const options: http.RequestOptions = {
-				hostname: parsedUrl.hostname,
-				port: parsedUrl.port || 80,
-				path: `${parsedUrl.pathname}${parsedUrl.search}`,
-				method: "POST",
-				headers: {
-					"Content-Type": "application/json",
-					"Content-Length": Buffer.byteLength(body),
-				},
-			};
-
-			const req = http.request(options, (res) => {
-				let data = "";
-				res.on("data", (chunk) => {
-					data += chunk.toString();
-				});
-				res.on("end", () => {
-					if (res.statusCode !== 200) {
-						console.error(
-							`[Sweep] Local request failed with status ${res.statusCode}: ${data}`,
-						);
-						finish(() =>
-							reject(
-								new Error(`Local request failed with status ${res.statusCode}`),
-							),
-						);
-						return;
-					}
-					try {
-						const parsedJson: unknown = JSON.parse(data);
-						const parsed = schema.safeParse(parsedJson);
-						if (!parsed.success) {
-							finish(() =>
-								reject(
-									new Error(`Invalid local response: ${parsed.error.message}`),
-								),
-							);
-							return;
-						}
-						finish(() => resolve(parsed.data));
-					} catch {
-						finish(() =>
-							reject(new Error("Failed to parse local response JSON")),
-						);
-					}
-				});
-			});
-
-			const onError = (error: Error) => {
-				finish(() =>
-					reject(new Error(`Local request error: ${error.message}`)),
-				);
-			};
-
-			const onAbort = () => {
-				const abortError = new Error("Request aborted");
-				abortError.name = "AbortError";
-				req.destroy(abortError);
-				finish(() => reject(abortError));
-			};
-
-			const cleanup = () => {
-				req.off("error", onError);
-				if (signal) {
-					signal.removeEventListener("abort", onAbort);
-				}
-			};
-
-			req.on("error", onError);
-
-			if (signal) {
-				if (signal.aborted) {
-					onAbort();
-					return;
-				}
-				signal.addEventListener("abort", onAbort);
-			}
-
-			req.write(body);
-			req.end();
-		});
 	}
 }

@@ -1,7 +1,17 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
 
-import { DEFAULT_MAX_CONTEXT_FILES } from "~/core/constants.ts";
+import {
+	DEFAULT_BROAD_AFTER,
+	DEFAULT_BROAD_BEFORE,
+	DEFAULT_COMPLETION_TIMEOUT_MS,
+	DEFAULT_DIAG_RADIUS,
+	DEFAULT_KEEP_ALIVE,
+	DEFAULT_MAX_CONTEXT_FILES,
+	DEFAULT_NUM_CTX,
+	DEFAULT_OLLAMA_URL,
+	MODEL_NAME,
+} from "~/core/constants.ts";
 
 const SWEEP_CONFIG_SECTION = "sweep";
 
@@ -29,8 +39,39 @@ export class SweepConfig {
 		return this.config.get<number>("autocompleteSnoozeUntil", 0);
 	}
 
-	get localPort(): number {
-		return this.config.get<number>("localPort", 8081);
+	get ollamaUrl(): string {
+		return this.config.get<string>("ollamaUrl", DEFAULT_OLLAMA_URL);
+	}
+
+	get modelName(): string {
+		return this.config.get<string>("modelName", MODEL_NAME);
+	}
+
+	get numCtx(): number {
+		return this.config.get<number>("numCtx", DEFAULT_NUM_CTX);
+	}
+
+	get keepAlive(): string {
+		return this.config.get<string>("keepAlive", DEFAULT_KEEP_ALIVE);
+	}
+
+	get completionTimeoutMs(): number {
+		return this.config.get<number>(
+			"completionTimeoutMs",
+			DEFAULT_COMPLETION_TIMEOUT_MS,
+		);
+	}
+
+	get diagRadius(): number {
+		return this.config.get<number>("diagRadius", DEFAULT_DIAG_RADIUS);
+	}
+
+	get broadBefore(): number {
+		return this.config.get<number>("broadBefore", DEFAULT_BROAD_BEFORE);
+	}
+
+	get broadAfter(): number {
+		return this.config.get<number>("broadAfter", DEFAULT_BROAD_AFTER);
 	}
 
 	isAutocompleteSnoozed(now = Date.now()): boolean {
@@ -76,13 +117,6 @@ export class SweepConfig {
 		target: vscode.ConfigurationTarget = vscode.ConfigurationTarget.Global,
 	): Thenable<void> {
 		return this.config.update("autocompleteSnoozeUntil", value, target);
-	}
-
-	setLocalPort(
-		value: number,
-		target: vscode.ConfigurationTarget = vscode.ConfigurationTarget.Global,
-	): Thenable<void> {
-		return this.config.update("localPort", value, target);
 	}
 
 	private getWorkspaceTarget(): vscode.ConfigurationTarget {

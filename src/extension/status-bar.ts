@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 
 import { config } from "~/core/config";
-import type { LocalAutocompleteServer } from "~/services/local-server.ts";
+import type { OllamaServer } from "~/services/ollama-server.ts";
 
 export class SweepStatusBar implements vscode.Disposable {
 	private statusBarItem: vscode.StatusBarItem;
@@ -64,7 +64,7 @@ export class SweepStatusBar implements vscode.Disposable {
 
 export function registerStatusBarCommands(
 	_context: vscode.ExtensionContext,
-	localServer?: LocalAutocompleteServer,
+	ollamaServer?: OllamaServer,
 ): vscode.Disposable[] {
 	const disposables: vscode.Disposable[] = [];
 
@@ -93,9 +93,9 @@ export function registerStatusBarCommands(
 					action: isSnoozed ? "resumeSnooze" : "snooze",
 				},
 				{
-					label: "$(server) Start Local Server",
-					description: "Manually start the local autocomplete server",
-					action: "startLocalServer",
+					label: "$(plug) Check Ollama Connection",
+					description: `Ping ${config.ollamaUrl}`,
+					action: "checkOllama",
 				},
 			];
 
@@ -115,22 +115,14 @@ export function registerStatusBarCommands(
 					case "resumeSnooze":
 						await handleResumeSnooze();
 						break;
-					case "startLocalServer":
-						if (localServer) {
-							try {
-								await localServer.startServer();
+					case "checkOllama":
+						if (ollamaServer) {
+							const ok = await ollamaServer.ensureReachable();
+							if (ok) {
 								vscode.window.showInformationMessage(
-									"Sweep local server started.",
-								);
-							} catch (error) {
-								vscode.window.showErrorMessage(
-									`Failed to start local server: ${(error as Error).message}`,
+									`Ollama reachable at ${config.ollamaUrl}.`,
 								);
 							}
-						} else {
-							vscode.window.showWarningMessage(
-								"Local server is not available.",
-							);
 						}
 						break;
 				}

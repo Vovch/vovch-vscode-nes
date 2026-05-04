@@ -11,7 +11,7 @@ import {
 	registerStatusBarCommands,
 	SweepStatusBar,
 } from "~/extension/status-bar.ts";
-import { LocalAutocompleteServer } from "~/services/local-server.ts";
+import { OllamaServer } from "~/services/ollama-server.ts";
 import {
 	type AutocompleteMetricsPayload,
 	AutocompleteMetricsTracker,
@@ -23,14 +23,14 @@ let jumpEditManager: JumpEditManager;
 let provider: InlineEditProvider;
 let statusBar: SweepStatusBar;
 let metricsTracker: AutocompleteMetricsTracker;
-let localServer: LocalAutocompleteServer;
+let ollamaServer: OllamaServer;
 
 export function activate(context: vscode.ExtensionContext) {
 	initSyntaxHighlighter();
 
 	tracker = new DocumentTracker();
-	localServer = new LocalAutocompleteServer();
-	const apiClient = new ApiClient(localServer);
+	ollamaServer = new OllamaServer();
+	const apiClient = new ApiClient(ollamaServer);
 	metricsTracker = new AutocompleteMetricsTracker();
 	jumpEditManager = new JumpEditManager(metricsTracker);
 	provider = new InlineEditProvider(
@@ -87,7 +87,7 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	statusBar = new SweepStatusBar(context);
-	const statusBarCommands = registerStatusBarCommands(context, localServer);
+	const statusBarCommands = registerStatusBarCommands(context, ollamaServer);
 
 	const changeListener = vscode.workspace.onDidChangeTextDocument((event) => {
 		if (event.document === vscode.window.activeTextEditor?.document) {
@@ -160,14 +160,14 @@ export function activate(context: vscode.ExtensionContext) {
 		jumpEditManager,
 		metricsTracker,
 		statusBar,
-		localServer,
+		ollamaServer,
 		...statusBarCommands,
 	);
 
-	// Always auto-start the local server
-	localServer.ensureServerRunning().catch((error) => {
-		console.error("[Sweep] Failed to auto-start local server:", error);
-	});
+	// Probe Ollama once at startup so the user gets an early warning if the
+	// daemon is down or the URL is wrong; the actual model load is deferred
+	// to the first completion.
+	void ollamaServer.ensureReachable();
 }
 
 export function deactivate() {}
