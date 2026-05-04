@@ -66,10 +66,10 @@ provider. Everything else listed below is new in this fork.
 
 ### Workspace rules
 
-- **`.vscode/nes-<ext>.md`** — workspace-local rules, no global merge.
-  `<ext>` is the source file's extension (`cpp`, `lua`, `js`, `ts`,
-  `py`, …). The body is wrapped in the language's single-line comment
-  syntax (`//`, `--`, `#`) and emitted as a sibling section
+- **`.vscode/nes-<ext>.md`** — workspace-local rules. `<ext>` is the
+  source file's extension (`cpp`, `lua`, `js`, `ts`, `py`, …). The
+  body is wrapped in the language's single-line comment syntax (`//`,
+  `--`, `#`) and emitted as a sibling section
   `<|file_sep|>context/rules\n…` placed right before the
   `original/current/updated` triplet, alongside `context/retrieval` /
   `context/diagnostics`. File reads are mtime-cached, so editing a
