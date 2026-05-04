@@ -1,12 +1,11 @@
-// Workspace-local sweep rules. Mirrors the cursortab-proxy ai-rules feature
-// but without any global merge — the file lives at
+// Workspace-local sweep rules. The file lives at
 //
 //   <workspace>/.vscode/nes-<ext>.md
 //
 // where <ext> is the source file's extension (cpp, lua, js, ts, py, …).
 // The body is wrapped in the language's single-line comment syntax and
-// spliced into the sweep prompt's leading <|file_sep|>{path} section, so
-// the model treats it as a top-of-file rule comment.
+// emitted as a sibling section <|file_sep|>context/rules\n... right
+// before the original/current/updated triplet (see sweep-prompt.ts).
 
 import * as fs from "node:fs";
 import * as path from "node:path";

@@ -5,81 +5,76 @@
 ## Fork changes
 
 This fork retargets the extension at a local Ollama running the sweep
-GGUF, removing the upstream `uvx sweep-autocomplete` Python child process
-(which falls back to CPU and is unusable for next-edit latency). The sweep
-prompt builder, post-processor, and rules layer are ported from
+GGUF, removing the upstream `uvx sweep-autocomplete` Python child
+process (which falls back to CPU and is unusable for next-edit
+latency).
+
+The sweep prompt format (broad context, retrieval, diagnostics, diff
+history, and the `original/current/updated` triplet with cursor marker
+and prefill) is ported from
 [cursortab.nvim](https://github.com/cursortab/cursortab.nvim)'s sweep
-provider.
+provider. Everything else listed below is new in this fork.
 
 ### Backend
 
 - **Ollama, not the Python server.** The extension talks directly to
   Ollama's native `/api/generate` endpoint. Ollama's OpenAI-compat
   `/v1/completions` layer silently drops `options.num_ctx` and
-  `keep_alive`, so the model would load with the host default
-  (often 32k via `OLLAMA_CONTEXT_LENGTH`) and a 4-minute idle timer
-  regardless of what we sent. Field mapping mirrors cursortab-proxy:
-  `max_tokens → options.num_predict`, `temperature/stop/num_ctx →
-  options.*`, `keep_alive` top-level.
+  `keep_alive`, so the model would load with the host default and a
+  4-minute idle timer regardless of what we sent. Field mapping:
+  `max_tokens → options.num_predict`,
+  `temperature/stop/num_ctx → options.*`, `keep_alive` top-level.
 - **Sweep prompt built in TypeScript.** Broad file context, retrieval
   (open editors + LSP definitions/usages + clipboard), diagnostics,
-  recent-changes diff history, and the
-  `original/current/updated` triplet with cursor marker and prefill —
-  all assembled directly from VSCode's API instead of a Python service.
+  recent-changes diff history, and the `original/current/updated`
+  triplet with cursor marker and prefill — all assembled directly from
+  VSCode's API.
 - **Eval-count log.** Each completion logs `prompt_eval_count` /
   `eval_count` to the Extension Host so it's easy to confirm prompts
   fit inside `num_ctx`.
 
-### Prompt shaping (context-overflow guards)
+### Prompt shaping
 
-- **`num_ctx=32768` default.** Sweep's GGUF is 32k natively. Pinning
-  8k truncates real prompts and yields delete-only completions.
+- **`num_ctx=32768` default.** Matches sweep's GGUF native context.
 - **`diagRadius=12`.** VSCode hands every diagnostic on the file to the
-  prompt; this trim drops entries whose line is more than ±N from the
-  cursor (chatty linters otherwise dominate the prompt).
+  prompt; this filter drops entries whose `Line N:` is more than ±N
+  from the cursor.
 - **`broadBefore=125 / broadAfter=75`.** Asymmetric trim of the leading
-  `<|file_sep|>{path}` broad-context section, biased behind the cursor
-  where prediction-relevant context typically lives. Cursortab hardcodes
-  ±150. The original/current/updated edit window is unaffected.
-- **`MAX_TOKENS=2048` + reject `finish_reason=length`.** Without
-  cursortab's anchor-based truncation logic, a truncated response yields
-  a corrupt line-diff (window tail no longer matches the model output),
+  `<|file_sep|>{path}` broad-context section, biased behind the cursor.
+  The `original/current/updated` edit window is unaffected.
+- **Reject `finish_reason=length`.** A truncated response gives a
+  corrupt line-diff (window tail no longer matches the model output),
   so we drop it instead of producing a destructive edit.
 
 ### Edit-window post-processing
 
 - **Line-diff trim.** The model usually re-emits the whole edit window
-  with one or two lines changed. Without trimming, VSCode would draw a
-  giant ghost overlay even though most of it is identical to what's
-  already there. We compute the longest common prefix and suffix of the
-  new vs. old window lines and return only the changed middle as the
-  edit. Insertions splice in with a trailing `\n`, deletions gobble the
-  trailing newline of the last removed line.
+  with one or two lines changed. We compute the longest common prefix
+  and suffix of the new vs. old window lines and return only the
+  changed middle as the edit. Insertions splice in with a trailing
+  `\n`; deletions gobble the trailing newline of the last removed line.
 - **Cursor anchoring.** When the replacement starts before the cursor
-  on the line that contains the cursor, we pre-anchor `startIndex` to
-  the cursor and strip the matching pre-cursor prefix from the
-  completion ourselves. Otherwise `InlineEditProvider.normalizeInlineResult`
-  collapses `endIndex` onto the cursor while auto-trimming the prefix,
-  leaving the original line's tail (e.g. a stray `)`) behind.
+  on the line that contains the cursor, the start is anchored to the
+  cursor and the matching pre-cursor prefix is stripped from the
+  completion, so accepting cleanly rewrites the line tail instead of
+  inserting at the cursor and leaving the original tail in place.
 - **Auto-retrigger after accept.** VSCode does not auto-fire the
   inline-completion provider for the text change that an accept itself
-  applies, so without an explicit trigger we got exactly one suggestion
-  per editing session. After every accept we now call
-  `editor.action.inlineSuggest.trigger`, mirroring cursortab.nvim.
+  applies, so after every accept we call
+  `editor.action.inlineSuggest.trigger` to keep the next-edit loop
+  alive.
 
 ### Workspace rules
 
 - **`.vscode/nes-<ext>.md`** — workspace-local rules, no global merge.
   `<ext>` is the source file's extension (`cpp`, `lua`, `js`, `ts`,
   `py`, …). The body is wrapped in the language's single-line comment
-  syntax (`//`, `--`, `#`) and injected as a sibling section
-  `<|file_sep|>context/rules\n…` right before the
-  `original/current/updated` triplet — the same placement
-  cursortab-proxy uses. Splicing rules into the broad-context section
-  would let the model treat them as drift versus the pristine code in
-  the edit window and try to add them to the output, breaking the
-  line-diff. File reads are mtime-cached so editing a rules file
-  picks up on the next keystroke without reloading the window.
+  syntax (`//`, `--`, `#`) and emitted as a sibling section
+  `<|file_sep|>context/rules\n…` placed right before the
+  `original/current/updated` triplet, alongside `context/retrieval` /
+  `context/diagnostics`. File reads are mtime-cached, so editing a
+  rules file picks up on the next keystroke without reloading the
+  window.
 
 ### Settings
 
@@ -89,7 +84,7 @@ provider.
 | `sweep.modelName` | `sweepai/sweep-next-edit` | Model alias |
 | `sweep.numCtx` | `32768` | `options.num_ctx` |
 | `sweep.keepAlive` | `30m` | Ollama idle-unload timer |
-| `sweep.completionTimeoutMs` | `60000` | Cold load with 32k ctx can take 20–40s |
+| `sweep.completionTimeoutMs` | `60000` | Per-request timeout (ms) |
 | `sweep.diagRadius` | `12` | ±N lines around cursor; `0` disables |
 | `sweep.broadBefore` | `125` | Lines of broad context before cursor |
 | `sweep.broadAfter` | `75` | Lines of broad context after cursor |
@@ -97,10 +92,11 @@ provider.
 ### Setup
 
 ```sh
-ollama pull hf.co/sweepai/sweep-next-edit-1.5b
-# (optional) alias to match the default sweep.modelName:
-#   ollama cp hf.co/sweepai/sweep-next-edit-1.5b sweepai/sweep-next-edit
+ollama pull sweepai/sweep-next-edit
 ```
+
+The model name matches `sweep.modelName`'s default, so no aliasing is
+needed.
 
 Build & install the extension:
 

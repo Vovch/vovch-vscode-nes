@@ -127,12 +127,12 @@ export function buildSweepPrompt(
 	const diffSection = formatDiffSection(req.recent_changes);
 	if (diffSection !== "") body += diffSection;
 
-	// Rules are injected as a sibling context section right before the
-	// original/current/updated triplet — the same placement cursortab-proxy
-	// uses. Splicing into the broad-context section above would let the
-	// model see them as part of the file body and treat the difference vs.
-	// the pristine code in the edit window as drift to "fix", breaking the
-	// line-based diff.
+	// Rules are emitted as a sibling context section right before the
+	// original/current/updated triplet, alongside the existing
+	// context/retrieval and context/diagnostics siblings. Splicing into
+	// the broad-context section above would let the model see them as
+	// part of the file body and treat the difference vs. the pristine
+	// code in the edit window as drift to "fix", breaking the line-diff.
 	if (opts.rules !== "") {
 		body += `<|file_sep|>context/rules\n${opts.rules}`;
 	}

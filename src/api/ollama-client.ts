@@ -3,7 +3,7 @@
 // top-level `keep_alive`, so the model loads with the host default
 // (often 32k via OLLAMA_CONTEXT_LENGTH) and a 4-minute idle timer
 // regardless of what we send. The native /api/generate endpoint honours
-// both. Schema mapping mirrors cursortab-proxy's translation layer:
+// both. Field mapping:
 //   max_tokens   → options.num_predict
 //   temperature  → options.temperature
 //   stop         → options.stop
