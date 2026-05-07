@@ -41,11 +41,17 @@ export interface AutocompleteInput {
 const MAX_RETRIEVAL_CHUNKS = 16;
 const MAX_DEFINITION_CHUNKS = 6;
 const MAX_USAGE_CHUNKS = 6;
-const MAX_RETRIEVAL_CHUNK_LINES = 200;
 const RETRIEVAL_CONTEXT_LINES_ABOVE = 9;
 const RETRIEVAL_CONTEXT_LINES_BELOW = 9;
 const MAX_CLIPBOARD_LINES = 20;
-const MAX_DIAGNOSTICS = 50;
+const MAX_DIAGNOSTICS = 15;
+
+// Per-chunk retrieval truncation. Original Sweep used 200 lines against a
+// 150/150 broad window (≈2/3 of the broad-context budget); we keep the same
+// ratio so user-tuned sweep.broadBefore/broadAfter scales retrieval too.
+function retrievalChunkLines(): number {
+	return Math.floor(((config.broadBefore + config.broadAfter) * 2) / 3);
+}
 
 export class ApiClient {
 	private server: OllamaServer;
@@ -265,7 +271,7 @@ export class ApiClient {
 			...definitionChunks,
 		]
 			.filter((chunk) => chunk.file_path !== currentFilePath)
-			.map((chunk) => truncateRetrievalChunk(chunk, MAX_RETRIEVAL_CHUNK_LINES))
+			.map((chunk) => truncateRetrievalChunk(chunk, retrievalChunkLines()))
 			.filter((chunk) => chunk.content.trim().length > 0);
 
 		return fuseAndDedupRetrievalSnippets(chunks).slice(-MAX_RETRIEVAL_CHUNKS);
