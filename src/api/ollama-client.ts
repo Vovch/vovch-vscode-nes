@@ -143,14 +143,14 @@ export class OllamaClient implements CompletionClient {
 				const err = new Error(
 					`Ollama request timed out after ${req.timeoutMs}ms`,
 				);
-				httpReq.destroy(err);
+				httpReq.destroy();
 				finish(() => reject(err));
 			};
 
 			const onAbort = () => {
 				const abortError = new Error("Request aborted");
 				abortError.name = "AbortError";
-				httpReq.destroy(abortError);
+				httpReq.destroy();
 				finish(() => reject(abortError));
 			};
 
