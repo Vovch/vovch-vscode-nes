@@ -24,6 +24,14 @@ interface QueuedSuggestionState {
 	suggestions: AutocompleteResult[];
 }
 
+interface RequestSnapshot {
+	uri: string;
+	version: number;
+	position: vscode.Position;
+	content: string;
+	cursorOffset: number;
+}
+
 interface AcceptedInlineSuggestion {
 	id: string;
 	startIndex: number;
@@ -51,6 +59,8 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		id: number;
 		controller: AbortController;
 		uri: string;
+		snapshot: RequestSnapshot;
+		response: Promise<AutocompleteResult[] | null>;
 	} | null = null;
 	private lastRequestTimestamp = 0;
 
@@ -74,7 +84,6 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 	): Promise<vscode.InlineCompletionList | undefined> {
 		const requestId = ++this.requestCounter;
 		this.latestRequestId = requestId;
-		this.cancelInFlightRequest("superseded by new request");
 
 		if (!config.enabled) return undefined;
 		if (config.isAutocompleteSnoozed()) return undefined;
@@ -94,11 +103,12 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			return undefined;
 		}
 		const currentContent = document.getText();
-		const requestSnapshot = {
+		const requestSnapshot: RequestSnapshot = {
 			uri,
 			version: document.version,
 			position,
 			content: currentContent,
+			cursorOffset: document.offsetAt(position),
 		};
 		const originalContent =
 			this.tracker.getOriginalContent(uri) ?? currentContent;
@@ -126,33 +136,84 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		if (!shouldContinue) return undefined;
 		if (!this.isLatestRequest(requestId)) return undefined;
 
-		const controller = new AbortController();
-		this.inFlightRequest = { id: requestId, controller, uri };
-		const cancellation = token.onCancellationRequested(() => {
-			controller.abort();
-		});
+		const setupOriginate = (): Promise<AutocompleteResult[] | null> => {
+			this.cancelInFlightRequest("superseded by new request");
+			const controller = new AbortController();
+			const input = this.buildInput(document, position, originalContent);
+			const promise = this.api.getAutocomplete(input, controller.signal);
+			const inFlight = {
+				id: requestId,
+				controller,
+				uri,
+				snapshot: requestSnapshot,
+				response: promise,
+			};
+			this.inFlightRequest = inFlight;
+			promise.finally(() => {
+				if (this.inFlightRequest === inFlight) {
+					this.inFlightRequest = null;
+				}
+			});
+			return promise;
+		};
+
+		let sourceSnapshot: RequestSnapshot;
+		let responsePromise: Promise<AutocompleteResult[] | null>;
+		const piggyback = this.tryPiggyback(uri, requestSnapshot);
+		if (piggyback) {
+			console.log(
+				`[Sweep] Piggybacking req=${requestId} on in-flight req=${piggyback.id}`,
+			);
+			sourceSnapshot = piggyback.snapshot;
+			responsePromise = piggyback.response;
+		} else {
+			sourceSnapshot = requestSnapshot;
+			responsePromise = setupOriginate();
+		}
 
 		try {
-			const input = this.buildInput(document, position, originalContent);
-			const responseResults = await this.api.getAutocomplete(
-				input,
-				controller.signal,
-			);
+			let responseResults = await responsePromise;
+
+			// Piggyback fallback: if reusing the in-flight produced no usable
+			// result for our snapshot, originate fresh before giving up. Only
+			// do this for the latest request — older provider calls just bail.
+			if (
+				piggyback &&
+				config.enabled &&
+				!token.isCancellationRequested &&
+				this.isLatestRequest(requestId)
+			) {
+				const piggybackUsable =
+					!!responseResults?.length &&
+					!!this.tryBuildGhostTextExtension(
+						sourceSnapshot,
+						document,
+						responseResults,
+					)?.length;
+				if (!piggybackUsable) {
+					console.log(
+						`[Sweep] Piggyback unusable for req=${requestId}, originating fresh`,
+					);
+					sourceSnapshot = requestSnapshot;
+					responsePromise = setupOriginate();
+					responseResults = await responsePromise;
+				}
+			}
 
 			if (
 				!config.enabled ||
 				token.isCancellationRequested ||
-				controller.signal.aborted ||
 				!responseResults?.length
 			) {
 				return undefined;
 			}
 
+			const isOwnRequest = sourceSnapshot === requestSnapshot;
 			const isLatestRequest = this.isLatestRequest(requestId);
 			let results = responseResults;
-			if (!isLatestRequest) {
+			if (!isOwnRequest || !isLatestRequest) {
 				const extendedResults = this.tryBuildGhostTextExtension(
-					requestSnapshot,
+					sourceSnapshot,
 					document,
 					responseResults,
 				);
@@ -162,7 +223,11 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 				results = extendedResults;
 			}
 
-			if (isLatestRequest && this.isRequestStale(requestSnapshot, token)) {
+			if (
+				isOwnRequest &&
+				isLatestRequest &&
+				this.isRequestStale(requestSnapshot, token)
+			) {
 				console.log("[Sweep] Inline edit response stale; skipping render", {
 					uri,
 					requestVersion: requestSnapshot.version,
@@ -276,12 +341,36 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			}
 			console.error("[Sweep] InlineEditProvider error:", error);
 			return undefined;
-		} finally {
-			cancellation.dispose();
-			if (this.inFlightRequest?.id === requestId) {
-				this.inFlightRequest = null;
-			}
 		}
+	}
+
+	private tryPiggyback(
+		uri: string,
+		newSnapshot: RequestSnapshot,
+	): {
+		id: number;
+		snapshot: RequestSnapshot;
+		response: Promise<AutocompleteResult[] | null>;
+	} | null {
+		const inFlight = this.inFlightRequest;
+		if (!inFlight) return null;
+		if (inFlight.uri !== uri) return null;
+		if (inFlight.controller.signal.aborted) return null;
+		const inserted = this.extractInsertedTextAtCursor(
+			inFlight.snapshot.content,
+			newSnapshot.content,
+			inFlight.snapshot.cursorOffset,
+		);
+		if (!inserted) return null;
+		// Only piggyback for forward typing of identifier characters.
+		// Punctuation / whitespace usually mark a syntactic boundary the
+		// model's existing prediction won't extend through.
+		if (!/^\w+$/.test(inserted)) return null;
+		return {
+			id: inFlight.id,
+			snapshot: inFlight.snapshot,
+			response: inFlight.response,
+		};
 	}
 
 	private cancelInFlightRequest(reason: string): void {
@@ -659,12 +748,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 	}
 
 	private tryBuildGhostTextExtension(
-		snapshot: {
-			uri: string;
-			version: number;
-			position: vscode.Position;
-			content: string;
-		},
+		snapshot: RequestSnapshot,
 		document: vscode.TextDocument,
 		results: AutocompleteResult[],
 	): AutocompleteResult[] | null {
@@ -673,7 +757,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 
 		const currentText = document.getText();
 		const snapshotCursorOffset = Math.min(
-			document.offsetAt(snapshot.position),
+			snapshot.cursorOffset,
 			snapshot.content.length,
 		);
 		const userInsertedText = this.extractInsertedTextAtCursor(
@@ -1031,12 +1115,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 	}
 
 	private isRequestStale(
-		snapshot: {
-			uri: string;
-			version: number;
-			position: vscode.Position;
-			content: string;
-		},
+		snapshot: RequestSnapshot,
 		token: vscode.CancellationToken,
 	): boolean {
 		if (token.isCancellationRequested) return true;
