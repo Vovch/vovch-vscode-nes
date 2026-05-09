@@ -12,11 +12,6 @@ import {
 	createHighlightedBoxDecorationMultiline,
 	type HighlightRange,
 } from "~/editor/syntax-highlight-renderer.ts";
-import {
-	type AutocompleteMetricsPayload,
-	type AutocompleteMetricsTracker,
-	buildMetricsPayload,
-} from "~/telemetry/autocomplete-metrics.ts";
 
 const HINT_DECORATION_TYPE = vscode.window.createTextEditorDecorationType({
 	after: {
@@ -39,7 +34,6 @@ interface PendingJumpEdit {
 	editStartPos: vscode.Position;
 	editEndPos: vscode.Position;
 	originCursorLine: number;
-	metricsPayload: AutocompleteMetricsPayload;
 }
 
 export class JumpEditManager implements vscode.Disposable {
@@ -49,10 +43,8 @@ export class JumpEditManager implements vscode.Disposable {
 		{},
 	);
 	private refreshNonce = 0;
-	private metricsTracker: AutocompleteMetricsTracker;
 
-	constructor(metricsTracker: AutocompleteMetricsTracker) {
-		this.metricsTracker = metricsTracker;
+	constructor() {
 		this.disposables.push(
 			vscode.workspace.onDidChangeTextDocument((event) => {
 				if (
@@ -168,12 +160,8 @@ export class JumpEditManager implements vscode.Disposable {
 			editStartPos,
 			editEndPos,
 			originCursorLine: editor.selection.active.line,
-			metricsPayload: buildMetricsPayload(document, result, {
-				suggestionType: "JUMP_TO_EDIT",
-			}),
 		};
 
-		this.metricsTracker.trackShown(this.pendingJumpEdit.metricsPayload);
 		this.applyDecorations(editor, document);
 		vscode.commands.executeCommand("setContext", "sweep.hasJumpEdit", true);
 	}
@@ -471,7 +459,6 @@ export class JumpEditManager implements vscode.Disposable {
 		);
 
 		if (success) {
-			this.metricsTracker.trackAccepted(pendingJumpEdit.metricsPayload);
 			const endsWithNewline = result.completion.endsWith("\n");
 			const insertedLines = result.completion.split("\n");
 			const contentLineCount = endsWithNewline
@@ -491,7 +478,7 @@ export class JumpEditManager implements vscode.Disposable {
 			logger.error("Failed to apply jump edit");
 		}
 
-		this.clearJumpEdit({ trackDisposed: false });
+		this.clearJumpEdit();
 	}
 
 	dismissJumpEdit(): void {
@@ -531,12 +518,8 @@ export class JumpEditManager implements vscode.Disposable {
 		);
 	}
 
-	clearJumpEdit(options?: { trackDisposed?: boolean }): void {
+	clearJumpEdit(): void {
 		const hadPending = this.pendingJumpEdit !== null;
-		const shouldTrackDisposed = options?.trackDisposed ?? true;
-		if (this.pendingJumpEdit && shouldTrackDisposed) {
-			this.metricsTracker.trackDisposed(this.pendingJumpEdit.metricsPayload);
-		}
 		this.pendingJumpEdit = null;
 		this.clearDecorations();
 		vscode.commands.executeCommand("setContext", "sweep.hasJumpEdit", false);

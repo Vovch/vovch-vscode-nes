@@ -72,50 +72,11 @@ export const AutocompleteResponseSchema = z.object({
 		.optional(),
 });
 
-export const SuggestionTypeSchema = z.enum([
-	"GHOST_TEXT",
-	"POPUP",
-	"JUMP_TO_EDIT",
-	"MULTI",
-]);
-
-export const AutocompleteEventTypeSchema = z.enum([
-	"autocomplete_suggestion_shown",
-	"autocomplete_suggestion_accepted",
-	"autocomplete_suggestion_disposed",
-	"autocomplete_edit_tracking",
-]);
-
-export const AutocompleteMetricsRequestSchema = z.object({
-	event_type: AutocompleteEventTypeSchema,
-	suggestion_type: SuggestionTypeSchema,
-	additions: z.number(),
-	deletions: z.number(),
-	autocomplete_id: z.string(),
-	edit_tracking: z.string().optional(),
-	edit_tracking_15: z.string().optional(),
-	edit_tracking_30: z.string().optional(),
-	edit_tracking_60: z.string().optional(),
-	edit_tracking_120: z.string().optional(),
-	edit_tracking_300: z.string().optional(),
-	edit_tracking_line: FileChunkSchema.optional(),
-	lifespan: z.number().optional(),
-	debug_info: z.string(),
-	device_id: z.string(),
-	num_definitions_retrieved: z.number().optional(),
-	num_usages_retrieved: z.number().optional(),
-});
-
 export type FileChunk = z.infer<typeof FileChunkSchema>;
 export type UserAction = z.infer<typeof UserActionSchema>;
 export type EditorDiagnostic = z.infer<typeof EditorDiagnosticSchema>;
 export type AutocompleteRequest = z.infer<typeof AutocompleteRequestSchema>;
 export type AutocompleteResponse = z.infer<typeof AutocompleteResponseSchema>;
-export type AutocompleteMetricsRequest = z.infer<
-	typeof AutocompleteMetricsRequestSchema
->;
-export type AutocompleteEventType = z.infer<typeof AutocompleteEventTypeSchema>;
-export type SuggestionType = z.infer<typeof SuggestionTypeSchema>;
 
 export type ActionType = UserAction["action_type"];
 

@@ -4,11 +4,6 @@ import type { AutocompleteResult } from "~/api/schemas.ts";
 import { config } from "~/core/config";
 import { logger } from "~/core/logger.ts";
 import type { JumpEditManager } from "~/editor/jump-edit-manager.ts";
-import {
-	type AutocompleteMetricsPayload,
-	type AutocompleteMetricsTracker,
-	buildMetricsPayload,
-} from "~/telemetry/autocomplete-metrics.ts";
 import type { DocumentTracker } from "~/telemetry/document-tracker.ts";
 import { toUnixPath } from "~/utils/path.ts";
 import { isFileTooLarge, utf8ByteOffsetAt } from "~/utils/text.ts";
@@ -44,14 +39,12 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 	private tracker: DocumentTracker;
 	private jumpEditManager: JumpEditManager;
 	private api: ApiClient;
-	private metricsTracker: AutocompleteMetricsTracker;
 	private lastInlineEdit: {
 		uri: string;
 		line: number;
 		character: number;
 		version: number;
 		suggestion: AcceptedInlineSuggestion;
-		payload: AutocompleteMetricsPayload;
 	} | null = null;
 	private queuedSuggestions: QueuedSuggestionState | null = null;
 	private shouldConsumeQueuedSuggestion = false;
@@ -70,12 +63,10 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		tracker: DocumentTracker,
 		jumpEditManager: JumpEditManager,
 		api: ApiClient,
-		metricsTracker: AutocompleteMetricsTracker,
 	) {
 		this.tracker = tracker;
 		this.jumpEditManager = jumpEditManager;
 		this.api = api;
-		this.metricsTracker = metricsTracker;
 	}
 
 	async provideInlineCompletionItems(
@@ -516,12 +507,8 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			return undefined;
 		}
 
-		const metricsPayload = buildMetricsPayload(document, result, {
-			suggestionType: "GHOST_TEXT",
-		});
-
-		if (this.lastInlineEdit?.payload.id !== metricsPayload.id) {
-			void this.clearInlineEdit("replaced by new inline edit", {
+		if (this.lastInlineEdit?.suggestion.id !== result.id) {
+			this.clearInlineEdit("replaced by new inline edit", {
 				hideSuggestion: false,
 			});
 		}
@@ -536,7 +523,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		item.command = {
 			title: "Accept Sweep Inline Edit",
 			command: "sweep.acceptInlineEdit",
-			arguments: [metricsPayload, acceptedSuggestion],
+			arguments: [acceptedSuggestion],
 		};
 
 		this.lastInlineEdit = {
@@ -545,9 +532,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			character: position.character,
 			version: document.version,
 			suggestion: acceptedSuggestion,
-			payload: metricsPayload,
 		};
-		this.metricsTracker.trackShown(metricsPayload);
 		return { items: [item] };
 	}
 
@@ -620,11 +605,11 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		return last.suggestion.completion.startsWith(typed);
 	}
 
-	handleInlineAccept(
-		payload: AutocompleteMetricsPayload,
-		acceptedSuggestion?: AcceptedInlineSuggestion,
-	): void {
-		if (this.lastInlineEdit?.payload.id === payload.id) {
+	handleInlineAccept(acceptedSuggestion?: AcceptedInlineSuggestion): void {
+		if (
+			acceptedSuggestion &&
+			this.lastInlineEdit?.suggestion.id === acceptedSuggestion.id
+		) {
 			this.lastInlineEdit = null;
 		}
 		if (!acceptedSuggestion) return;
@@ -647,16 +632,11 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 
 	private clearInlineEdit(
 		reason: string,
-		options?: { trackDisposed?: boolean; hideSuggestion?: boolean },
+		options?: { hideSuggestion?: boolean },
 	): void {
 		if (!this.lastInlineEdit) return;
-		const payload = this.lastInlineEdit.payload;
-		const shouldTrackDisposed = options?.trackDisposed ?? true;
 		const shouldHideSuggestion = options?.hideSuggestion ?? true;
 
-		if (shouldTrackDisposed) {
-			this.metricsTracker.trackDisposed(payload);
-		}
 		this.lastInlineEdit = null;
 		this.clearSuggestionQueue(reason ? `inline cleared: ${reason}` : undefined);
 

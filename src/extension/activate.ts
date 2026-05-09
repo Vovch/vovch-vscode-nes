@@ -13,17 +13,12 @@ import {
 	SweepStatusBar,
 } from "~/extension/status-bar.ts";
 import { OllamaServer } from "~/services/ollama-server.ts";
-import {
-	type AutocompleteMetricsPayload,
-	AutocompleteMetricsTracker,
-} from "~/telemetry/autocomplete-metrics.ts";
 import { DocumentTracker } from "~/telemetry/document-tracker.ts";
 
 let tracker: DocumentTracker;
 let jumpEditManager: JumpEditManager;
 let provider: InlineEditProvider;
 let statusBar: SweepStatusBar;
-let metricsTracker: AutocompleteMetricsTracker;
 let ollamaServer: OllamaServer;
 
 export function activate(context: vscode.ExtensionContext) {
@@ -34,14 +29,8 @@ export function activate(context: vscode.ExtensionContext) {
 	tracker = new DocumentTracker();
 	ollamaServer = new OllamaServer();
 	const apiClient = new ApiClient(ollamaServer);
-	metricsTracker = new AutocompleteMetricsTracker();
-	jumpEditManager = new JumpEditManager(metricsTracker);
-	provider = new InlineEditProvider(
-		tracker,
-		jumpEditManager,
-		apiClient,
-		metricsTracker,
-	);
+	jumpEditManager = new JumpEditManager();
+	provider = new InlineEditProvider(tracker, jumpEditManager, apiClient);
 	const refreshTheme = () => {
 		reloadTheme();
 		jumpEditManager.refreshJumpEditDecorations();
@@ -68,7 +57,6 @@ export function activate(context: vscode.ExtensionContext) {
 	const acceptInlineEditCommand = vscode.commands.registerCommand(
 		"sweep.acceptInlineEdit",
 		(
-			payload: AutocompleteMetricsPayload | undefined,
 			acceptedSuggestion:
 				| {
 						id: string;
@@ -78,9 +66,7 @@ export function activate(context: vscode.ExtensionContext) {
 				  }
 				| undefined,
 		) => {
-			if (!payload) return;
-			provider.handleInlineAccept(payload, acceptedSuggestion);
-			metricsTracker.trackAccepted(payload);
+			provider.handleInlineAccept(acceptedSuggestion);
 		},
 	);
 
@@ -161,7 +147,6 @@ export function activate(context: vscode.ExtensionContext) {
 		themeConfigListener,
 		tracker,
 		jumpEditManager,
-		metricsTracker,
 		statusBar,
 		ollamaServer,
 		logChannel,
