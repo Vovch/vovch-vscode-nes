@@ -101,6 +101,7 @@ export class JumpEditManager implements vscode.Disposable {
 			editEndLine,
 			cursorOffset,
 			startIndex: result.startIndex,
+			endIndex: result.endIndex,
 			completion: result.completion,
 			isOnSingleNewlineBoundary,
 		});

@@ -49,6 +49,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		line: number;
 		character: number;
 		version: number;
+		suggestion: AcceptedInlineSuggestion;
 		payload: AutocompleteMetricsPayload;
 	} | null = null;
 	private queuedSuggestions: QueuedSuggestionState | null = null;
@@ -541,6 +542,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			line: position.line,
 			character: position.character,
 			version: document.version,
+			suggestion: acceptedSuggestion,
 			payload: metricsPayload,
 		};
 		this.metricsTracker.trackShown(metricsPayload);
@@ -571,6 +573,9 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			position.character !== this.lastInlineEdit.character ||
 			document.version !== this.lastInlineEdit.version
 		) {
+			if (this.isPrefixTypingExtension(document, position)) {
+				return;
+			}
 			console.log("[Sweep] Clearing inline edit: cursor moved away", {
 				originalLine: this.lastInlineEdit.line,
 				currentLine: position.line,
@@ -581,6 +586,36 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			});
 			this.clearInlineEdit("cursor moved away");
 		}
+	}
+
+	// True when the user is typing forward on the same line and the typed
+	// delta is a prefix of the rendered ghost text. Lets VSCode shrink the
+	// ghost text in place while the next provider call piggybacks on the
+	// in-flight request and extends the suggestion.
+	private isPrefixTypingExtension(
+		document: vscode.TextDocument,
+		position: vscode.Position,
+	): boolean {
+		const last = this.lastInlineEdit;
+		if (!last) return false;
+		if (document.uri.toString() !== last.uri) return false;
+		if (position.line !== last.line) return false;
+		if (position.character <= last.character) return false;
+		// Pure-insertion suggestions only — replacements past the cursor
+		// would need us to re-derive the visible ghost text after edits.
+		if (last.suggestion.startIndex !== last.suggestion.endIndex) return false;
+
+		const anchor = new vscode.Position(last.line, last.character);
+		const anchorOffset = document.offsetAt(anchor);
+		if (anchorOffset !== last.suggestion.startIndex) return false;
+
+		const newOffset = document.offsetAt(position);
+		const typedLen = newOffset - anchorOffset;
+		if (typedLen <= 0 || typedLen > last.suggestion.completion.length) {
+			return false;
+		}
+		const typed = document.getText(new vscode.Range(anchor, position));
+		return last.suggestion.completion.startsWith(typed);
 	}
 
 	handleInlineAccept(

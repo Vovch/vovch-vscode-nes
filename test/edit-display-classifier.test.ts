@@ -10,6 +10,7 @@ describe("classifyEditDisplay", () => {
 			editEndLine: 6,
 			cursorOffset: 500,
 			startIndex: 120,
+			endIndex: 120,
 			completion: "x",
 			isOnSingleNewlineBoundary: false,
 		});
@@ -27,6 +28,7 @@ describe("classifyEditDisplay", () => {
 			editEndLine: 9,
 			cursorOffset: 200,
 			startIndex: 120,
+			endIndex: 120,
 			completion: "foo\nbar",
 			isOnSingleNewlineBoundary: false,
 		});
@@ -44,6 +46,7 @@ describe("classifyEditDisplay", () => {
 			editEndLine: 10,
 			cursorOffset: 200,
 			startIndex: 120,
+			endIndex: 120,
 			completion: "replacement",
 			isOnSingleNewlineBoundary: false,
 		});
@@ -61,6 +64,7 @@ describe("classifyEditDisplay", () => {
 			editEndLine: 10,
 			cursorOffset: 200,
 			startIndex: 200,
+			endIndex: 200,
 			completion: "suffix",
 			isOnSingleNewlineBoundary: false,
 		});
@@ -78,6 +82,7 @@ describe("classifyEditDisplay", () => {
 			editEndLine: 10,
 			cursorOffset: 200,
 			startIndex: 200,
+			endIndex: 200,
 			completion: "foo\nbar",
 			isOnSingleNewlineBoundary: true,
 		});
@@ -85,6 +90,24 @@ describe("classifyEditDisplay", () => {
 		expect(result).toEqual({
 			decision: "SUPPRESS",
 			reason: "single-newline-boundary",
+		});
+	});
+
+	test("returns JUMP for multiline replacement at cursor", () => {
+		const result = classifyEditDisplay({
+			cursorLine: 10,
+			editStartLine: 10,
+			editEndLine: 18,
+			cursorOffset: 200,
+			startIndex: 200,
+			endIndex: 350,
+			completion: '"label");\n\tauto *x = ...',
+			isOnSingleNewlineBoundary: false,
+		});
+
+		expect(result).toEqual({
+			decision: "JUMP",
+			reason: "multiline-replacement-at-cursor",
 		});
 	});
 });

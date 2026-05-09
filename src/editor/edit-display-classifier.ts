@@ -7,6 +7,7 @@ export interface EditDisplayClassification {
 		| "before-cursor-multiline"
 		| "before-cursor-single-line"
 		| "single-newline-boundary"
+		| "multiline-replacement-at-cursor"
 		| "inline-safe";
 }
 
@@ -16,6 +17,7 @@ export interface EditDisplayClassifierInput {
 	editEndLine: number;
 	cursorOffset: number;
 	startIndex: number;
+	endIndex: number;
 	completion: string;
 	isOnSingleNewlineBoundary: boolean;
 }
@@ -67,6 +69,21 @@ export function classifyEditDisplay(
 		return {
 			decision: "SUPPRESS",
 			reason: "single-newline-boundary",
+		};
+	}
+
+	// Multi-line replacements anchored at the cursor don't render as inline
+	// ghost text via vscode.InlineCompletionItem — VSCode silently swallows
+	// them when the new text doesn't extend the existing line. Route to a
+	// jump-edit decoration so the diff is at least visible.
+	if (
+		input.startIndex === input.cursorOffset &&
+		input.endIndex > input.startIndex &&
+		input.editEndLine > input.editStartLine
+	) {
+		return {
+			decision: "JUMP",
+			reason: "multiline-replacement-at-cursor",
 		};
 	}
 
