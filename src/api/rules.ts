@@ -1,11 +1,12 @@
 // Workspace-local sweep rules. The file lives at
 //
-//   <workspace>/.vscode/nes-<ext>.md
+//   <workspace>/.vscode/nes-<languageId>.md
 //
-// where <ext> is the source file's extension (cpp, lua, js, ts, py, …).
-// The body is wrapped in the language's single-line comment syntax and
-// emitted as a sibling section <|file_sep|>context/rules\n... right
-// before the original/current/updated triplet (see sweep-prompt.ts).
+// where <languageId> is VS Code's document language id (cpp, lua,
+// javascript, typescript, python, …). The body is wrapped in the
+// language's single-line comment syntax and emitted as a sibling
+// section <|file_sep|>context/rules\n... right before the
+// original/current/updated triplet (see sweep-prompt.ts).
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -62,9 +63,10 @@ const cache = new Map<string, CachedRules>();
 export function loadWorkspaceRules(document: vscode.TextDocument): string {
 	const ws = vscode.workspace.getWorkspaceFolder(document.uri);
 	if (!ws) return "";
-	const ext = path.extname(document.uri.fsPath).slice(1).toLowerCase();
-	if (!ext) return "";
-	const file = path.join(ws.uri.fsPath, ".vscode", `nes-${ext}.md`);
+	const lang = document.languageId;
+	const comment = COMMENT_PREFIXES[lang];
+	if (!comment) return "";
+	const file = path.join(ws.uri.fsPath, ".vscode", `nes-${lang}.md`);
 
 	let mtimeMs: number;
 	try {
@@ -86,12 +88,6 @@ export function loadWorkspaceRules(document: vscode.TextDocument): string {
 		return "";
 	}
 	if (body === "") {
-		cache.set(file, { mtimeMs, text: "" });
-		return "";
-	}
-
-	const comment = COMMENT_PREFIXES[document.languageId];
-	if (!comment) {
 		cache.set(file, { mtimeMs, text: "" });
 		return "";
 	}
