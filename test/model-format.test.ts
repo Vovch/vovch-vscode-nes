@@ -48,6 +48,14 @@ describe("detectModelFormat", () => {
 		expect(detectModelFormat("seedcoder-8b-edit")).toBe("zeta2");
 		expect(detectModelFormat("seed-coder/edit-prediction")).toBe("zeta2");
 	});
+
+	test("zeta2.1 takes precedence over the zeta2 substring", () => {
+		// "zeta-2.1" contains "zeta-2" — order matters in detectModelFormat.
+		expect(detectModelFormat("zed-industries/zeta-2.1")).toBe("zeta2.1");
+		expect(detectModelFormat("zeta2.1-q4")).toBe("zeta2.1");
+		expect(detectModelFormat("zeta-2-1")).toBe("zeta2.1");
+		expect(detectModelFormat("Zeta_2_1")).toBe("zeta2.1");
+	});
 });
 
 describe("buildSweepPrompt", () => {
@@ -103,5 +111,29 @@ describe("buildZeta2Prompt", () => {
 		// Editable window: [50-15, 50+15+1) = [35, 66)
 		expect(result.windowStartLine).toBe(35);
 		expect(result.windowEndLine).toBe(66);
+	});
+
+	test("protocolVersion 2.1 swaps to <|marker_1|> / <|marker_2|>", () => {
+		const result = buildZeta2Prompt(makeRequest(), { protocolVersion: "2.1" });
+		expect(result.format).toBe("zeta2.1");
+		expect(result.stopTokens).toEqual(["<|marker_2|>"]);
+
+		// 2.1 uses paired numbered markers around the editable region —
+		// no git-conflict scaffolding.
+		expect(result.prompt).toContain("<|marker_1|>\n");
+		expect(result.prompt).toContain("<|marker_2|>\n");
+		expect(result.prompt).not.toContain(ZETA2_CURRENT_MARKER);
+		expect(result.prompt).not.toContain(ZETA2_SEPARATOR);
+
+		// Order: <|marker_1|> ... <|user_cursor|> ... <|marker_2|> ... <[fim-middle]>
+		const m1 = result.prompt.indexOf("<|marker_1|>\n");
+		const cursorIdx = result.prompt.indexOf(ZETA2_CURSOR_MARKER);
+		const m2 = result.prompt.indexOf("<|marker_2|>\n");
+		const middleIdx = result.prompt.indexOf("<[fim-middle]>");
+		expect(m1).toBeGreaterThan(0);
+		expect(cursorIdx).toBeGreaterThan(m1);
+		expect(cursorIdx).toBeLessThan(m2);
+		expect(middleIdx).toBeGreaterThan(m2);
+		expect(result.prompt.endsWith("<[fim-middle]>")).toBe(true);
 	});
 });

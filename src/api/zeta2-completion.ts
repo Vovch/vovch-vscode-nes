@@ -1,8 +1,17 @@
-// Postprocessing for Zeta2 model output. Mirrors parseCompletion in
-// cursortab.nvim's server/provider/zeta2/zeta2.go: strip the trailing
-// >>>>>>> UPDATED end marker, short-circuit on the NO_EDITS sentinel,
-// strip <|user_cursor|> markers, then map the editable-region replacement
-// to a UTF-8 byte-offset edit on the user's document.
+// Postprocessing for Zeta2 / Zeta2.1 model output. Mirrors parseCompletion
+// in cursortab.nvim's server/provider/zeta2/zeta2.go for the 2.0 path,
+// extended for the 2.1 paired-marker layout (with optional multi-region
+// support). Strips end-of-edit markers, short-circuits on the NO_EDITS
+// sentinel (2.0), strips <|user_cursor|> markers, then maps each
+// editable-region replacement to a UTF-8 byte-offset edit on the user's
+// document.
+//
+// Returns an array because zeta2.1 multi-region prompts can carry up to
+// MAX_REGIONS pairs and the model may emit a replacement for each. The
+// primary (cursor) region is always first in the returned array; the
+// editor renders it as ghost text and queues the rest as jump edits.
+// Single-region prompts (sweep, 2.0, 2.1-with-no-extras) return an array
+// of one.
 //
 // Unlike Sweep, the model output is *only* the new editable region (not
 // a full window rewrite), so trimCommonEnds runs against the editable
@@ -10,7 +19,7 @@
 
 import { logger } from "~/core/logger.ts";
 import type { CompletionResult } from "./completion-client.ts";
-import type { ModelPrompt } from "./model-format.ts";
+import type { EditRegion, ModelPrompt } from "./model-format.ts";
 import type { AutocompleteResponse } from "./schemas.ts";
 import { stripInjectedFixmesFromLines } from "./sweep-completion.ts";
 import {
@@ -23,28 +32,166 @@ export function buildZeta2Response(
 	completion: CompletionResult,
 	prompt: ModelPrompt,
 	autocompleteId: string,
-): AutocompleteResponse | null {
+): AutocompleteResponse[] | null {
 	if (completion.finishReason === "length") return null;
 
-	let text = completion.text;
+	const regions = prompt.regions ?? [
+		{
+			startLine: prompt.windowStartLine,
+			endLine: prompt.windowEndLine,
+			isPrimary: true,
+		},
+	];
+	const primary = regions.find((r) => r.isPrimary) ?? regions[0];
+	if (!primary) return null;
 
-	// Strip trailing end marker (with or without newline).
-	if (text.endsWith(ZETA2_END_MARKER)) {
-		text = text.slice(0, -ZETA2_END_MARKER.length);
+	const responses: AutocompleteResponse[] = [];
+
+	if (prompt.format === "zeta2.1" && regions.length > 1) {
+		// Multi-region path: split the model output by paired numbered
+		// markers, one replacement per region. A region with no matching
+		// pair (model decided not to edit it) is skipped silently.
+		const replacements = parseRegionReplacements(completion.text);
+		// Emit primary first so the editor renders it as ghost text and
+		// queues the rest as jump edits.
+		const ordered: EditRegion[] = [
+			primary,
+			...regions.filter((r) => r !== primary),
+		];
+		ordered.forEach((region, displayIdx) => {
+			const regionIdx = regions.indexOf(region);
+			const replacement = replacements.get(regionIdx);
+			if (replacement === undefined) return;
+			const id =
+				displayIdx === 0
+					? autocompleteId
+					: `${autocompleteId}-r${regionIdx + 1}`;
+			const response = buildRegionResponse(
+				replacement,
+				region,
+				prompt,
+				id,
+				completion.finishReason,
+			);
+			if (response) responses.push(response);
+		});
 	} else {
-		const trimmed = ZETA2_END_MARKER.replace(/\n$/, "");
-		if (text.endsWith(trimmed)) {
-			text = text.slice(0, -trimmed.length);
+		// Single-region path (sweep / 2.0 / 2.1 with no extra regions).
+		// Strip the end-of-edit scaffolding once, then run a single-
+		// region diff against the primary region.
+		let cleaned = completion.text;
+		if (prompt.format === "zeta2.1") {
+			// Strip every marker_1 / marker_2 token globally — the model
+			// occasionally emits stray markers mid-output (multi-region
+			// hallucination); leftover ones would render as literal
+			// `<|marker_…|>` text inside the suggestion. The tokens are
+			// model-specific and won't appear in real source code.
+			cleaned = cleaned.replace(/<\|marker_1\|>\n?/g, "");
+			cleaned = cleaned.replace(/\n?<\|marker_2\|>/g, "");
+		} else {
+			// 2.0 / sweep-on-zeta2: strip trailing >>>>>>> UPDATED.
+			if (cleaned.endsWith(ZETA2_END_MARKER)) {
+				cleaned = cleaned.slice(0, -ZETA2_END_MARKER.length);
+			} else {
+				const trimmed = ZETA2_END_MARKER.replace(/\n$/, "");
+				if (cleaned.endsWith(trimmed)) {
+					cleaned = cleaned.slice(0, -trimmed.length);
+				}
+			}
+			if (cleaned.trimStart().startsWith(ZETA2_NO_EDITS)) return null;
 		}
+		const response = buildRegionResponse(
+			cleaned,
+			primary,
+			prompt,
+			autocompleteId,
+			completion.finishReason,
+		);
+		if (response) responses.push(response);
 	}
 
-	if (text.trimStart().startsWith(ZETA2_NO_EDITS)) return null;
+	return responses.length > 0 ? responses : null;
+}
 
-	// Replace the FIRST cursor marker with a sentinel so we can track the
-	// post-edit cursor position through the line-diff and surface it as a
-	// snippet $0 placeholder. We accept both <|user_cursor|> (Zeta2's
-	// trained marker) and <|cursor|> (sweep-style — some SeedCoder
-	// checkpoints echo it back). Extra markers are stripped silently.
+// Parse a multi-region 2.1 response into a map of region index →
+// replacement content. Region index is derived from the open marker
+// number: marker_1/2 → region 0, marker_3/4 → region 1, marker_5/6 →
+// region 2, etc.
+//
+// Lenient on close markers: if an open's matching close is missing
+// (model emitted its native EOS instead of `<|marker_2|>`, or got cut
+// off mid-stream), the content extends to the next open marker, or
+// to end-of-text if no further markers exist. Strict on numbering:
+// an open whose immediately-following marker is the wrong even number
+// is dropped as malformed.
+function parseRegionReplacements(text: string): Map<number, string> {
+	type MarkerHit = { num: number; start: number; end: number };
+	const re = /<\|marker_(\d+)\|>/g;
+	const hits: MarkerHit[] = [];
+	for (const m of text.matchAll(re)) {
+		const idx = m.index ?? -1;
+		if (idx < 0) continue;
+		hits.push({
+			num: Number.parseInt(m[1] ?? "0", 10),
+			start: idx,
+			end: idx + m[0].length,
+		});
+	}
+
+	const map = new Map<number, string>();
+	for (let i = 0; i < hits.length; i++) {
+		const open = hits[i];
+		if (!open || open.num % 2 !== 1 || open.num < 1) continue;
+		const regionIdx = (open.num - 1) / 2;
+		if (map.has(regionIdx)) continue; // first writer wins
+
+		const next = hits[i + 1];
+		let contentEnd: number;
+		if (!next) {
+			// Truncated last pair — model didn't emit a close. Take
+			// everything to end of text.
+			contentEnd = text.length;
+		} else if (next.num === open.num + 1) {
+			// Properly closed.
+			contentEnd = next.start;
+		} else if (next.num % 2 === 1) {
+			// Another open marker before our close. Treat the current
+			// region as truncated and let its content end at the next
+			// open's start so the back-to-back regions parse cleanly.
+			contentEnd = next.start;
+		} else {
+			// Wrong close number (e.g. open=1 followed by marker_4 with
+			// no marker_2 between). Malformed — drop.
+			continue;
+		}
+
+		let content = text.slice(open.end, contentEnd);
+		content = content.replace(/^\n/, "").replace(/\n$/, "");
+		map.set(regionIdx, content);
+	}
+	return map;
+}
+
+// Map one region's replacement text to a UTF-8 byte-offset edit. Shared
+// between single-region and per-region multi-region paths. The caller
+// is responsible for stripping end-of-edit / marker scaffolding before
+// passing `text` in.
+function buildRegionResponse(
+	rawText: string,
+	region: EditRegion,
+	prompt: ModelPrompt,
+	autocompleteId: string,
+	finishReason: string,
+): AutocompleteResponse | null {
+	let text = rawText;
+
+	// Replace the FIRST cursor marker with a sentinel so we can track
+	// the post-edit cursor position through the line-diff and surface
+	// it as a snippet $0 placeholder. Accept both <|user_cursor|>
+	// (Zeta2's trained marker) and <|cursor|> (sweep-style — some
+	// SeedCoder checkpoints echo it back). Only the primary region is
+	// expected to contain a cursor marker, but secondary regions are
+	// safe to run through this — countCursorMarkers will return 0.
 	const markerCount = countCursorMarkers(text);
 	if (markerCount > 0) {
 		logger.debug(
@@ -66,7 +213,7 @@ export function buildZeta2Response(
 		prompt.inlineDiagnosticsMarker,
 	);
 	const oldLines = prompt.lines
-		.slice(prompt.windowStartLine, prompt.windowEndLine)
+		.slice(region.startLine, region.endLine)
 		.map((l) => l.content);
 
 	if (trimRight(newLines.join("\n")) === trimRight(oldLines.join("\n"))) {
@@ -77,7 +224,7 @@ export function buildZeta2Response(
 	if (trimmed === null) return null;
 
 	const { skipPrefix, oldMiddle, newMiddle } = trimmed;
-	const startLineIdx = prompt.windowStartLine + skipPrefix;
+	const startLineIdx = region.startLine + skipPrefix;
 	const endLineIdx = startLineIdx + oldMiddle.length; // exclusive
 
 	const startByte = prompt.cursorLineByteOffsets[startLineIdx] ?? 0;
@@ -117,7 +264,7 @@ export function buildZeta2Response(
 		end_index: endByte,
 		completion: completionText,
 		confidence: 0.8,
-		finish_reason: completion.finishReason,
+		finish_reason: finishReason,
 		...(cursorTargetOffset !== undefined
 			? { cursor_target_offset: cursorTargetOffset }
 			: {}),

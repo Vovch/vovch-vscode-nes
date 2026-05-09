@@ -227,6 +227,15 @@ export function buildSweepPrompt(
 		stopTokens: SWEEP_STOP_TOKENS,
 		windowStartLine,
 		windowEndLine,
+		// Sweep is single-region; the primary region matches the
+		// full original/current/updated window.
+		regions: [
+			{
+				startLine: windowStartLine,
+				endLine: windowEndLine,
+				isPrimary: true,
+			},
+		],
 		lines: lines.map((content, i) => ({
 			startByte: lineOffsets[i] ?? 0,
 			content,

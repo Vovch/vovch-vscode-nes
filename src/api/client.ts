@@ -20,6 +20,7 @@ import { getCommentPrefix, loadWorkspaceRules } from "./rules.ts";
 import {
 	type AutocompleteRequest,
 	AutocompleteRequestSchema,
+	type AutocompleteResponse,
 	type AutocompleteResult,
 	type EditorDiagnostic,
 	type FileChunk,
@@ -91,7 +92,7 @@ export class ApiClient {
 		const inlineDiagnosticsMarker = config.inlineDiagnosticsMarker;
 		const messageTransforms = config.diagnosticsMessageTransforms;
 		const prompt: ModelPrompt =
-			format === "zeta2"
+			format === "zeta2" || format === "zeta2.1"
 				? buildZeta2Prompt(parsedRequest.data, {
 						diagRadius: config.diagRadius,
 						rules,
@@ -99,6 +100,7 @@ export class ApiClient {
 						injectInlineDiagnostics: config.injectInlineDiagnostics,
 						inlineDiagnosticsMarker,
 						messageTransforms,
+						protocolVersion: format === "zeta2.1" ? "2.1" : "2",
 					})
 				: buildSweepPrompt(parsedRequest.data, {
 						broadBefore: config.broadBefore,
@@ -136,50 +138,61 @@ export class ApiClient {
 			logger.trace("← /v1/completions raw response:", completion.text);
 
 			const id = `nesweep-${Date.now()}-${++this.idCounter}`;
-			const response =
-				format === "zeta2"
-					? buildZeta2Response(completion, prompt, id)
-					: buildSweepResponse(completion, prompt, id);
-			if (!response) return null;
+			let responses: AutocompleteResponse[] | null;
+			if (format === "zeta2" || format === "zeta2.1") {
+				responses = buildZeta2Response(completion, prompt, id);
+			} else {
+				const single = buildSweepResponse(completion, prompt, id);
+				responses = single ? [single] : null;
+			}
+			if (!responses) return null;
 
 			const decode = (i: number) =>
 				utf8ByteOffsetToUtf16Offset(documentText, i);
-			const result: AutocompleteResult = {
-				id: response.autocomplete_id,
-				startIndex: decode(response.start_index),
-				endIndex: decode(response.end_index),
-				completion: response.completion,
-				confidence: response.confidence,
-				...(response.cursor_target_offset !== undefined
-					? { cursorTargetOffset: response.cursor_target_offset }
-					: {}),
-			};
-			// If the replacement starts before the cursor on the same line that
-			// contains it, anchor the start at the cursor and strip the matching
-			// prefix from the completion. InlineEditProvider.normalizeInlineResult
-			// otherwise collapses endIndex onto the cursor when it auto-trims the
-			// pre-cursor prefix, leaving the line's original tail (e.g. a stray
-			// `)`) in place.
 			const cursorOffset = input.document.offsetAt(input.position);
-			if (result.startIndex < cursorOffset && cursorOffset <= result.endIndex) {
-				const prefix = documentText.slice(result.startIndex, cursorOffset);
-				if (result.completion.startsWith(prefix)) {
-					result.startIndex = cursorOffset;
-					result.completion = result.completion.slice(prefix.length);
-					if (result.cursorTargetOffset !== undefined) {
-						// Shift the cursor target to match the trimmed completion.
-						// If the marker landed inside the stripped prefix, drop it
-						// (we no longer have a meaningful position to point at).
-						if (result.cursorTargetOffset >= prefix.length) {
-							result.cursorTargetOffset -= prefix.length;
-						} else {
-							delete result.cursorTargetOffset;
+			const results: AutocompleteResult[] = [];
+			for (const response of responses) {
+				const result: AutocompleteResult = {
+					id: response.autocomplete_id,
+					startIndex: decode(response.start_index),
+					endIndex: decode(response.end_index),
+					completion: response.completion,
+					confidence: response.confidence,
+					...(response.cursor_target_offset !== undefined
+						? { cursorTargetOffset: response.cursor_target_offset }
+						: {}),
+				};
+				// If the replacement starts before the cursor on the same
+				// line that contains it, anchor the start at the cursor and
+				// strip the matching prefix from the completion. The
+				// InlineEditProvider.normalizeInlineResult path otherwise
+				// collapses endIndex onto the cursor when it auto-trims the
+				// pre-cursor prefix, leaving the line's original tail
+				// (e.g. a stray `)`) in place. Only the primary (cursor)
+				// region can ever satisfy the position guard; secondary
+				// regions in multi-region 2.1 sit elsewhere in the file.
+				if (
+					result.startIndex < cursorOffset &&
+					cursorOffset <= result.endIndex
+				) {
+					const prefix = documentText.slice(result.startIndex, cursorOffset);
+					if (result.completion.startsWith(prefix)) {
+						result.startIndex = cursorOffset;
+						result.completion = result.completion.slice(prefix.length);
+						if (result.cursorTargetOffset !== undefined) {
+							if (result.cursorTargetOffset >= prefix.length) {
+								result.cursorTargetOffset -= prefix.length;
+							} else {
+								delete result.cursorTargetOffset;
+							}
 						}
 					}
 				}
+				if (result.completion.length === 0) continue;
+				results.push(result);
 			}
-			if (result.completion.length === 0) return null;
-			return [result];
+			if (results.length === 0) return null;
+			return results;
 		} catch (error) {
 			const elapsed = ((Date.now() - reqStarted) / 1000).toFixed(2);
 			if ((error as Error).name === "AbortError") {

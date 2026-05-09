@@ -1,12 +1,17 @@
-// Zeta2 (Zed's SeedCoder-8B edit-prediction model) prompt builder. Ported
-// from cursortab.nvim's server/provider/zeta2/zeta2.go. The model is
-// distributed as `zed-industries/zeta2` on Hugging Face and uses the
-// SeedCoder SPM Fill-In-Middle layout, not the sweep <|file_sep|> layout.
+// Zeta2 / Zeta2.1 (Zed's SeedCoder-8B edit-prediction model family)
+// prompt builder. Ported from cursortab.nvim's
+// server/provider/zeta2/zeta2.go. The 2.0 checkpoint is distributed as
+// `zed-industries/zeta2`; the 2.1 checkpoint is `zed-industries/zeta-2.1`.
+// Both use the SeedCoder SPM Fill-In-Middle layout — they only differ in
+// the markers wrapping the editable region and the stop tokens. We
+// parameterise on `protocolVersion` (2.0 or 2.1) and dispatch the right
+// markers from a small table.
 //
 // Prompt layout (single completion text fed to /v1/completions). Pseudo-
 // files inside the prefix block are ordered for prefix-cache friendliness:
 // rules first (session-stable), then volatile context, with diagnostics
-// last so the model sees them adjacent to the cursor file's CURRENT block.
+// last so the model sees them adjacent to the cursor file's editable
+// region.
 //
 //   <[fim-suffix]>{code after editable region}\n
 //
@@ -26,16 +31,19 @@
 //
 //   <filename>{cursor file path}
 //   {code before editable region}
-//   <<<<<<< CURRENT
-//   {editable region with <|user_cursor|> inline}
-//   =======
-//   <[fim-middle]>
+//   <openRegion>                              2.0: "<<<<<<< CURRENT\n"
+//   {editable region with <|user_cursor|> inline}     2.1: "<|marker_1|>\n"
+//   <closeRegion>                             2.0: "=======\n"
+//   <[fim-middle]>                                      2.1: "<|marker_2|>\n"
 //
-// The model emits the replacement editable region terminated by
+// 2.0 model emits the replacement editable region terminated by
 // ">>>>>>> UPDATED". A literal "NO_EDITS" output means no change.
+// 2.1 model emits "<|marker_1|>\n{replacement}\n<|marker_2|>" — the
+// open marker is echoed in the output and stripped by the response
+// parser, the close marker doubles as the stop token.
 
 import type { MessageTransform } from "~/core/config.ts";
-import type { ModelPrompt } from "./model-format.ts";
+import type { EditRegion, ModelPrompt } from "./model-format.ts";
 import type {
 	AutocompleteRequest,
 	EditorDiagnostic,
@@ -50,6 +58,7 @@ import {
 } from "./sweep-prompt.ts";
 
 export const ZETA2_STOP_TOKENS = [">>>>>>> UPDATED\n", ">>>>>>> UPDATED"];
+export const ZETA2_1_STOP_TOKENS = ["<|marker_2|>"];
 
 const FIM_SUFFIX = "<[fim-suffix]>";
 const FIM_PREFIX = "<[fim-prefix]>";
@@ -60,6 +69,33 @@ export const ZETA2_SEPARATOR = "=======\n";
 export const ZETA2_END_MARKER = ">>>>>>> UPDATED\n";
 export const ZETA2_NO_EDITS = "NO_EDITS";
 export const ZETA2_CURSOR_MARKER = "<|user_cursor|>";
+export const ZETA2_1_OPEN_MARKER = "<|marker_1|>\n";
+export const ZETA2_1_CLOSE_MARKER = "<|marker_2|>";
+
+export type Zeta2Protocol = "2" | "2.1";
+
+interface Zeta2RegionMarkers {
+	openRegion: string;
+	closeRegion: string;
+	stopTokens: string[];
+}
+
+export function getZeta2RegionMarkers(
+	protocol: Zeta2Protocol,
+): Zeta2RegionMarkers {
+	if (protocol === "2.1") {
+		return {
+			openRegion: ZETA2_1_OPEN_MARKER,
+			closeRegion: `${ZETA2_1_CLOSE_MARKER}\n`,
+			stopTokens: ZETA2_1_STOP_TOKENS,
+		};
+	}
+	return {
+		openRegion: ZETA2_CURRENT_MARKER,
+		closeRegion: ZETA2_SEPARATOR,
+		stopTokens: ZETA2_STOP_TOKENS,
+	};
+}
 
 // Zed's cloud Zeta2 endpoint targets ±350 / ±150 token budgets for the
 // editable / context regions. We approximate with line counts since we
@@ -69,6 +105,13 @@ const EDITABLE_LINES_BEFORE = 15;
 const EDITABLE_LINES_AFTER = 15;
 
 const MAX_DIAGNOSTICS = 15;
+
+// Multi-region tunables (zeta2.1 only). A "diagnostic region" is a small
+// ±halo window around an LSP diagnostic that sits OUTSIDE the primary
+// cursor window — included so the model can fix several issues in one
+// round-trip. Cap the total region count so the prompt doesn't sprawl.
+const DIAG_REGION_HALO_LINES = 2;
+const MAX_REGIONS = 3; // 1 cursor + up to 2 diagnostic regions
 
 export interface Zeta2PromptOptions {
 	diagRadius: number;
@@ -85,6 +128,11 @@ export interface Zeta2PromptOptions {
 	// User-supplied regex transforms applied after built-in diagnostic
 	// normalisations. See SweepPromptOptions.messageTransforms.
 	messageTransforms: MessageTransform[];
+	// Which Zeta SeedCoder protocol the configured model speaks. "2"
+	// uses git-conflict markers around the editable region; "2.1" uses
+	// `<|marker_1|>` / `<|marker_2|>` numbered markers and expects the
+	// model to echo `<|marker_1|>` in its output.
+	protocolVersion: Zeta2Protocol;
 }
 
 const DEFAULT_OPTIONS: Zeta2PromptOptions = {
@@ -94,6 +142,7 @@ const DEFAULT_OPTIONS: Zeta2PromptOptions = {
 	injectInlineDiagnostics: false,
 	inlineDiagnosticsMarker: "BUG: LSP error here",
 	messageTransforms: [],
+	protocolVersion: "2",
 };
 
 export function buildZeta2Prompt(
@@ -126,13 +175,36 @@ export function buildZeta2Prompt(
 		opts,
 	);
 
-	const beforeLines = promptLines.slice(0, editableStart);
-	const editLines = promptLines.slice(editableStart, editableEnd);
-	const suffixLines = promptLines.slice(editableEnd);
+	// Compute editable regions. zeta2.1 supports multi-region edits; we
+	// always include the primary cursor region, plus up to MAX_REGIONS-1
+	// non-overlapping windows around nearby diagnostics so the model can
+	// fix several issues in one response. zeta2.0 / sweep ignore the
+	// extras (multi-region isn't part of those formats).
+	const regions = computeEditRegions(
+		cursorLine,
+		lines.length,
+		editableStart,
+		editableEnd,
+		req.editor_diagnostics,
+		opts,
+	);
+	const primary = regions.find((r) => r.isPrimary) ?? regions[0];
+	if (!primary) {
+		throw new Error("zeta2 prompt: no primary editable region computed");
+	}
 
 	let body = "";
 
-	// Suffix section: <[fim-suffix]>{code after editable region}\n
+	// Suffix section: <[fim-suffix]>{code after the LAST editable region}\n
+	// In single-region prompts this is just the code after the cursor
+	// window; in multi-region prompts it's the code after the highest
+	// region. Code BETWEEN regions stays in the cursor file body so each
+	// region's surrounding context is preserved.
+	const lastRegion = regions[regions.length - 1];
+	if (!lastRegion) {
+		throw new Error("zeta2 prompt: regions must be non-empty");
+	}
+	const suffixLines = promptLines.slice(lastRegion.endLine);
 	body += FIM_SUFFIX;
 	const suffixText = suffixLines.join("\n");
 	body += suffixText;
@@ -189,29 +261,33 @@ export function buildZeta2Prompt(
 	// Cursor file section
 	body += `${FILE_MARKER}${req.file_path}\n`;
 
-	if (beforeLines.length > 0) {
-		body += `${beforeLines.join("\n")}\n`;
-	}
-
-	body += ZETA2_CURRENT_MARKER;
-	const editableText = formatEditableWithCursor(
-		editLines,
-		cursorLine - editableStart,
+	// Render leading context + every editable region in order. The
+	// cursor file body is sliced into spans of unchanged lines and
+	// regions wrapped in numbered markers (zeta2.1) or in the legacy
+	// CURRENT/=======​ scaffold (zeta2.0, single region only). Code
+	// BEFORE the first region and BETWEEN regions ships verbatim so
+	// the model has the surrounding context for each edit point.
+	const stopTokens = appendCursorFileBodyAndMarkers(
+		(s) => {
+			body += s;
+		},
+		promptLines,
+		regions,
+		cursorLine,
 		cursorCol,
+		opts.protocolVersion,
 	);
-	body += editableText;
-	if (!editableText.endsWith("\n")) body += "\n";
-	body += ZETA2_SEPARATOR;
 	body += FIM_MIDDLE;
 
 	return {
 		prompt: body,
 		// FIM has no prefill — the model continues directly after <[fim-middle]>.
 		prefill: "",
-		format: "zeta2",
-		stopTokens: ZETA2_STOP_TOKENS,
-		windowStartLine: editableStart,
-		windowEndLine: editableEnd,
+		format: opts.protocolVersion === "2.1" ? "zeta2.1" : "zeta2",
+		stopTokens,
+		windowStartLine: primary.startLine,
+		windowEndLine: primary.endLine,
+		regions,
 		lines: lines.map((content, i) => ({
 			startByte: lineOffsets[i] ?? 0,
 			content,
@@ -225,6 +301,130 @@ export function buildZeta2Prompt(
 				}
 			: {}),
 	};
+}
+
+// Emit every region surrounded by the protocol's open/close markers,
+// with unchanged context lines between them. Returns the appropriate
+// stop-token list (highest-numbered close marker for 2.1; the fixed
+// `>>>>>>> UPDATED` for 2.0). Single-region prompts come out structurally
+// identical to the previous code path.
+function appendCursorFileBodyAndMarkers(
+	push: (s: string) => void,
+	promptLines: string[],
+	regions: EditRegion[],
+	cursorLine: number,
+	cursorCol: number,
+	protocolVersion: Zeta2Protocol,
+): string[] {
+	if (protocolVersion === "2") {
+		// 2.0 has no multi-region support — the model only knows about
+		// a single CURRENT/=======​ pair. Use the primary region only.
+		const primary = regions.find((r) => r.isPrimary) ?? regions[0];
+		if (!primary) {
+			throw new Error("zeta2 prompt: regions must be non-empty");
+		}
+		const beforeLines = promptLines.slice(0, primary.startLine);
+		const editLines = promptLines.slice(primary.startLine, primary.endLine);
+		const markers = getZeta2RegionMarkers("2");
+		if (beforeLines.length > 0) push(`${beforeLines.join("\n")}\n`);
+		push(markers.openRegion);
+		const editableText = formatEditableWithCursor(
+			editLines,
+			cursorLine - primary.startLine,
+			cursorCol,
+		);
+		push(editableText);
+		if (!editableText.endsWith("\n")) push("\n");
+		push(markers.closeRegion);
+		return markers.stopTokens;
+	}
+
+	// 2.1: emit `<|marker_{2k-1}|>{region_k}<|marker_{2k}|>` for each
+	// region in order, separated by the unchanged inter-region lines.
+	let prevEnd = 0;
+	for (let i = 0; i < regions.length; i++) {
+		const r = regions[i];
+		if (!r) continue;
+		const openNum = i * 2 + 1;
+		const closeNum = i * 2 + 2;
+		// Lines between the previous region's end and this region's start.
+		if (r.startLine > prevEnd) {
+			push(`${promptLines.slice(prevEnd, r.startLine).join("\n")}\n`);
+		}
+		push(`<|marker_${openNum}|>\n`);
+		const regionLines = promptLines.slice(r.startLine, r.endLine);
+		const text = r.isPrimary
+			? formatEditableWithCursor(
+					regionLines,
+					cursorLine - r.startLine,
+					cursorCol,
+				)
+			: regionLines.join("\n");
+		push(text);
+		if (!text.endsWith("\n")) push("\n");
+		push(`<|marker_${closeNum}|>\n`);
+		prevEnd = r.endLine;
+	}
+	// Stop on the highest-numbered close marker (the LAST region's
+	// close). The API's stop-token logic terminates at the first match,
+	// so the model can't run past the last region we asked for.
+	const lastClose = `<|marker_${regions.length * 2}|>`;
+	return [lastClose];
+}
+
+// Compute the editable regions for a request. Always includes the
+// primary cursor region (±EDITABLE_LINES_BEFORE/AFTER lines around
+// cursor). For zeta2.1, additionally folds in up to MAX_REGIONS-1
+// non-overlapping windows centred on diagnostics that fall outside the
+// cursor region — closest-to-cursor first. zeta2.0 returns just the
+// primary (multi-region isn't part of that format).
+function computeEditRegions(
+	cursorLine: number,
+	lineCount: number,
+	editableStart: number,
+	editableEnd: number,
+	diagnostics: EditorDiagnostic[],
+	opts: Zeta2PromptOptions,
+): EditRegion[] {
+	const primary: EditRegion = {
+		startLine: editableStart,
+		endLine: editableEnd,
+		isPrimary: true,
+	};
+	if (opts.protocolVersion !== "2.1") return [primary];
+
+	const cursorLine1 = cursorLine + 1;
+	// Order diagnostics by distance from cursor — closest get a region
+	// first, capacity-permitting.
+	const candidates = diagnostics
+		.filter(
+			(d) =>
+				opts.diagRadius === 0 ||
+				Math.abs(d.line - cursorLine1) <= opts.diagRadius,
+		)
+		.filter((d) => d.line - 1 < editableStart || d.line - 1 >= editableEnd)
+		.sort(
+			(a, b) => Math.abs(a.line - cursorLine1) - Math.abs(b.line - cursorLine1),
+		);
+
+	const regions: EditRegion[] = [primary];
+	for (const d of candidates) {
+		if (regions.length >= MAX_REGIONS) break;
+		const dLine = d.line - 1;
+		const start = Math.max(0, dLine - DIAG_REGION_HALO_LINES);
+		const end = Math.min(lineCount, dLine + DIAG_REGION_HALO_LINES + 1);
+		// Skip if it would overlap any region we've already accepted —
+		// adjacent / overlapping marker pairs confuse the model.
+		const overlaps = regions.some(
+			(r) => start < r.endLine && end > r.startLine,
+		);
+		if (overlaps) continue;
+		regions.push({ startLine: start, endLine: end, isPrimary: false });
+	}
+
+	// Emit order is by start line (open markers must be ascending).
+	regions.sort((a, b) => a.startLine - b.startLine);
+	return regions;
 }
 
 function decorateLinesWithFixmes(

@@ -147,7 +147,7 @@
 				"sweep.modelName": {
 					"type": "string",
 					"default": "sweepai/sweep-next-edit",
-					"description": "Model name sent in the request body. The prompt format is selected by substring match: names containing 'zeta2' / 'zeta-2' / 'seedcoder' use Zed's SeedCoder FIM layout, anything else uses the sweep <|file_sep|> layout."
+					"description": "Model name sent in the request body. The prompt format is selected by substring match: names containing 'zeta-2.1' / 'zeta2.1' use Zed's SeedCoder FIM layout v2.1 with `<|marker_1|>` / `<|marker_2|>` paired markers; names containing 'zeta-2' / 'zeta2' / 'seedcoder' use the v2.0 git-conflict layout; anything else uses the sweep `<|file_sep|>` layout."
 				},
 				"sweep.completionTimeoutMs": {
 					"type": "number",

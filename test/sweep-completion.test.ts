@@ -24,6 +24,9 @@ function makePrompt(
 		stopTokens: ["<|file_sep|>", "<|endoftext|>"],
 		windowStartLine,
 		windowEndLine,
+		regions: [
+			{ startLine: windowStartLine, endLine: windowEndLine, isPrimary: true },
+		],
 		lines: promptLines,
 		cursorLineByteOffsets: lineOffsets,
 	};
