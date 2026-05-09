@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import type { ApiClient, AutocompleteInput } from "~/api/client.ts";
 import type { AutocompleteResult } from "~/api/schemas.ts";
 import { config } from "~/core/config";
+import { logger } from "~/core/logger.ts";
 import type { JumpEditManager } from "~/editor/jump-edit-manager.ts";
 import {
 	type AutocompleteMetricsPayload,
@@ -91,11 +92,11 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 
 		const suppressionReason = await this.getSuppressionReason(document);
 		if (suppressionReason) {
-			console.log("[Sweep] Suppressing inline edit:", suppressionReason);
+			logger.debug("Suppressing inline edit:", suppressionReason);
 			return undefined;
 		}
-		console.log(
-			`[Sweep] provider invoked req=${requestId} line=${position.line} char=${position.character}`,
+		logger.debug(
+			`provider invoked req=${requestId} line=${position.line} char=${position.character}`,
 		);
 
 		const uri = document.uri.toString();
@@ -115,7 +116,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			this.tracker.getOriginalContent(uri) ?? currentContent;
 
 		if (isFileTooLarge(currentContent) || isFileTooLarge(originalContent)) {
-			console.log("[Sweep] Skipping inline edit: file too large", {
+			logger.debug("Skipping inline edit: file too large", {
 				uri,
 				currentLength: currentContent.length,
 				originalLength: originalContent.length,
@@ -162,8 +163,8 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		let responsePromise: Promise<AutocompleteResult[] | null>;
 		const piggyback = this.tryPiggyback(uri, requestSnapshot);
 		if (piggyback) {
-			console.log(
-				`[Sweep] Piggybacking req=${requestId} on in-flight req=${piggyback.id}`,
+			logger.debug(
+				`Piggybacking req=${requestId} on in-flight req=${piggyback.id}`,
 			);
 			sourceSnapshot = piggyback.snapshot;
 			responsePromise = piggyback.response;
@@ -192,8 +193,8 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 						responseResults,
 					)?.length;
 				if (!piggybackUsable) {
-					console.log(
-						`[Sweep] Piggyback unusable for req=${requestId}, originating fresh`,
+					logger.debug(
+						`Piggyback unusable for req=${requestId}, originating fresh`,
 					);
 					sourceSnapshot = requestSnapshot;
 					responsePromise = setupOriginate();
@@ -229,7 +230,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 				isLatestRequest &&
 				this.isRequestStale(requestSnapshot, token)
 			) {
-				console.log("[Sweep] Inline edit response stale; skipping render", {
+				logger.debug("Inline edit response stale; skipping render", {
 					uri,
 					requestVersion: requestSnapshot.version,
 					currentVersion: document.version,
@@ -242,8 +243,8 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 
 			const renderSuppressionReason = await this.getSuppressionReason(document);
 			if (renderSuppressionReason) {
-				console.log(
-					"[Sweep] Suppressing inline edit render:",
+				logger.debug(
+					"Suppressing inline edit render:",
 					renderSuppressionReason,
 				);
 				return undefined;
@@ -275,8 +276,8 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 					normalizedResult,
 				);
 				if (classification.decision === "SUPPRESS") {
-					console.log(
-						"[Sweep] Suppressing suggestion after display classification",
+					logger.debug(
+						"Suppressing suggestion after display classification",
 						{
 							reason: classification.reason,
 							id: normalizedResult.id,
@@ -303,8 +304,8 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 
 			if (renderMode === "JUMP" && jumpResult) {
 				this.clearSuggestionQueue("jump suggestion takes precedence");
-				console.log(
-					"[Sweep] Edit classified as jump edit, showing decoration",
+				logger.info(
+					"Edit classified as jump edit, showing decoration",
 					{
 						id: jumpResult.id,
 					},
@@ -329,7 +330,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			// Clear any stale jump indicator
 			this.jumpEditManager.clearJumpEdit();
 
-			console.log("[Sweep] Rendering inline edit suggestions", {
+			logger.info("Rendering inline edit suggestions", {
 				count: inlineResults.length,
 				cursorLine: position.line,
 				firstEditStartLine: document.positionAt(firstInlineResult.startIndex)
@@ -340,7 +341,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			if ((error as Error).name === "AbortError") {
 				return undefined;
 			}
-			console.error("[Sweep] InlineEditProvider error:", error);
+			logger.error("InlineEditProvider error:", error);
 			return undefined;
 		}
 	}
@@ -376,7 +377,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 
 	private cancelInFlightRequest(reason: string): void {
 		if (!this.inFlightRequest) return;
-		console.log("[Sweep] Cancelling in-flight inline edit request:", reason);
+		logger.debug("Cancelling in-flight inline edit request:", reason);
 		this.inFlightRequest.controller.abort();
 		this.inFlightRequest = null;
 	}
@@ -492,7 +493,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		const endPosition = document.positionAt(result.endIndex);
 		const editRange = new vscode.Range(startPosition, endPosition);
 
-		console.log("[Sweep] Creating inline edit:", {
+		logger.info("Creating inline edit:", {
 			id: result.id,
 			startPosition: `${startPosition.line}:${startPosition.character}`,
 			endPosition: `${endPosition.line}:${endPosition.character}`,
@@ -502,10 +503,11 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			endIndex: result.endIndex,
 			completionPreview: result.completion.slice(0, 100),
 		});
+		logger.trace("Creating inline edit completion:", result.completion);
 
 		if (result.startIndex < cursorOffset) {
-			console.log(
-				"[Sweep] Edit before cursor cannot be shown as ghost text; falling back to jump edit",
+			logger.debug(
+				"Edit before cursor cannot be shown as ghost text; falling back to jump edit",
 				{
 					id: result.id,
 				},
@@ -563,7 +565,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		if (!this.lastInlineEdit) return;
 		const currentUri = document.uri.toString();
 		if (currentUri !== this.lastInlineEdit.uri) {
-			console.log("[Sweep] Clearing inline edit: active document changed");
+			logger.debug("Clearing inline edit: active document changed");
 			this.clearInlineEdit("active document changed");
 			return;
 		}
@@ -576,7 +578,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			if (this.isPrefixTypingExtension(document, position)) {
 				return;
 			}
-			console.log("[Sweep] Clearing inline edit: cursor moved away", {
+			logger.debug("Clearing inline edit: cursor moved away", {
 				originalLine: this.lastInlineEdit.line,
 				currentLine: position.line,
 				originalCharacter: this.lastInlineEdit.character,
@@ -663,7 +665,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		}
 
 		if (reason) {
-			console.log("[Sweep] Inline edit cleared:", reason);
+			logger.debug("Inline edit cleared:", reason);
 		}
 	}
 
@@ -685,7 +687,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		this.queuedSuggestions = null;
 		this.shouldConsumeQueuedSuggestion = false;
 		if (reason && hadQueuedSuggestions) {
-			console.log("[Sweep] Cleared queued suggestions:", reason);
+			logger.debug("Cleared queued suggestions:", reason);
 		}
 	}
 
@@ -717,7 +719,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 				continue;
 			}
 			if (classification.decision === "JUMP") {
-				console.log("[Sweep] Rendering queued suggestion as jump edit", {
+				logger.debug("Rendering queued suggestion as jump edit", {
 					id: normalized.id,
 					remaining: queue.suggestions.length,
 				});
@@ -726,7 +728,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 				return undefined;
 			}
 
-			console.log("[Sweep] Rendering queued inline edit suggestion", {
+			logger.debug("Rendering queued inline edit suggestion", {
 				id: normalized.id,
 				remaining: queue.suggestions.length,
 			});
@@ -774,8 +776,8 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		const isNoOp =
 			this.trimNewlines(oldContent) === this.trimNewlines(result.completion);
 		if (isNoOp) {
-			console.log(
-				"[Sweep] Inline edit response is a no-op after trimming newlines; skipping render",
+			logger.debug(
+				"Inline edit response is a no-op after trimming newlines; skipping render",
 				{ id: result.id },
 			);
 		}
@@ -844,7 +846,7 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 			endIndex: result.endIndex + adjustmentOffset,
 		}));
 
-		console.log("[Sweep] Rendering extension from stale inline response", {
+		logger.debug("Rendering extension from stale inline response", {
 			id: adjustedFirst.id,
 			adjustmentOffset,
 		});

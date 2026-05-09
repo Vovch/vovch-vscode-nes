@@ -33,6 +33,8 @@ import type { IRawThemeSetting } from "@shikijs/vscode-textmate";
 import * as vscode from "vscode";
 import { z } from "zod";
 
+import { logger } from "~/core/logger.ts";
+
 const ALL_LANGS = [
 	...langBash,
 	...langC,
@@ -182,8 +184,8 @@ function discoverActiveTheme(): ThemeJson | null {
 				const themePath = path.join(ext.extensionPath, themeEntry.path);
 				const result = resolveThemeFile(themePath);
 				if (result) {
-					console.log(
-						"[Sweep] Discovered active theme:",
+					logger.info(
+						"Discovered active theme:",
 						themeSetting,
 						"from",
 						ext.id,
@@ -193,9 +195,9 @@ function discoverActiveTheme(): ThemeJson | null {
 			}
 		}
 
-		console.warn("[Sweep] Could not find theme file for:", themeSetting);
+		logger.warn("Could not find theme file for:", themeSetting);
 	} catch (err) {
-		console.warn("[Sweep] Failed to discover active theme:", err);
+		logger.warn("Failed to discover active theme:", err);
 	}
 	return null;
 }
@@ -290,7 +292,7 @@ function resolveThemeFile(themePath: string): ThemeJson | null {
 
 		return theme;
 	} catch (err) {
-		console.warn("[Sweep] Failed to read theme file:", themePath, err);
+		logger.warn("Failed to read theme file:", themePath, err);
 		return null;
 	}
 }

@@ -3,6 +3,7 @@ import * as vscode from "vscode";
 
 import { config } from "~/core/config.ts";
 import { MAX_TOKENS, STOP_TOKENS, TEMPERATURE } from "~/core/constants.ts";
+import { logger } from "~/core/logger.ts";
 import type { OllamaServer } from "~/services/ollama-server.ts";
 import { toUnixPath } from "~/utils/path.ts";
 import {
@@ -67,7 +68,7 @@ export class ApiClient {
 	): Promise<AutocompleteResult[] | null> {
 		const documentText = input.document.getText();
 		if (isFileTooLarge(documentText) || isFileTooLarge(input.originalContent)) {
-			console.log("[Sweep] Skipping autocomplete request: file too large", {
+			logger.debug("Skipping autocomplete request: file too large", {
 				documentLength: documentText.length,
 				originalLength: input.originalContent.length,
 			});
@@ -77,10 +78,7 @@ export class ApiClient {
 		const requestData = await this.buildRequest(input);
 		const parsedRequest = AutocompleteRequestSchema.safeParse(requestData);
 		if (!parsedRequest.success) {
-			console.error(
-				"[Sweep] Invalid request data:",
-				parsedRequest.error.message,
-			);
+			logger.error("Invalid request data:", parsedRequest.error.message);
 			return null;
 		}
 
@@ -92,8 +90,8 @@ export class ApiClient {
 		});
 
 		const reqStarted = Date.now();
-		console.log(
-			`[Sweep] → /api/generate model=${config.modelName} num_ctx=${config.numCtx} num_predict=${MAX_TOKENS} prompt_chars=${prompt.prompt.length}`,
+		logger.info(
+			`→ /api/generate model=${config.modelName} num_ctx=${config.numCtx} num_predict=${MAX_TOKENS} prompt_chars=${prompt.prompt.length}`,
 		);
 		try {
 			const completion = await this.server.getClient().complete(
@@ -111,9 +109,10 @@ export class ApiClient {
 			);
 			this.server.reportSuccess();
 			const elapsed = ((Date.now() - reqStarted) / 1000).toFixed(2);
-			console.log(
-				`[Sweep] ← /api/generate ${elapsed}s prompt_eval=${completion.promptEvalCount ?? "?"} eval=${completion.evalCount ?? "?"} finish=${completion.finishReason} response_chars=${completion.text.length}`,
+			logger.info(
+				`← /api/generate ${elapsed}s prompt_eval=${completion.promptEvalCount ?? "?"} eval=${completion.evalCount ?? "?"} finish=${completion.finishReason} response_chars=${completion.text.length}`,
 			);
+			logger.trace("← /api/generate raw response:", completion.text);
 
 			const id = `sweep-${Date.now()}-${++this.idCounter}`;
 			const response = buildAutocompleteResponse(completion, prompt, id);
@@ -147,11 +146,11 @@ export class ApiClient {
 		} catch (error) {
 			const elapsed = ((Date.now() - reqStarted) / 1000).toFixed(2);
 			if ((error as Error).name === "AbortError") {
-				console.log(`[Sweep] ← /api/generate aborted after ${elapsed}s`);
+				logger.debug(`← /api/generate aborted after ${elapsed}s`);
 				return null;
 			}
-			console.error(
-				`[Sweep] ← /api/generate failed after ${elapsed}s:`,
+			logger.error(
+				`← /api/generate failed after ${elapsed}s:`,
 				(error as Error).message,
 			);
 			this.server.reportFailure();

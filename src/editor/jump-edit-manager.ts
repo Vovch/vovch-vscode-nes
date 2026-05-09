@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import type { AutocompleteResult } from "~/api/schemas.ts";
+import { logger } from "~/core/logger.ts";
 import {
 	classifyEditDisplay,
 	EDIT_RANGE_PADDING_ROWS,
@@ -59,13 +60,13 @@ export class JumpEditManager implements vscode.Disposable {
 					event.document.uri.toString() === this.pendingJumpEdit.uri &&
 					event.contentChanges.length > 0
 				) {
-					console.log("[Sweep] Jump edit cleared: source document changed");
+					logger.debug("Jump edit cleared: source document changed");
 					this.clearJumpEdit();
 				}
 			}),
 			vscode.window.onDidChangeActiveTextEditor(() => {
 				if (this.pendingJumpEdit) {
-					console.log("[Sweep] Jump edit cleared: active editor changed");
+					logger.debug("Jump edit cleared: active editor changed");
 					this.clearJumpEdit();
 				}
 			}),
@@ -106,7 +107,7 @@ export class JumpEditManager implements vscode.Disposable {
 			isOnSingleNewlineBoundary,
 		});
 
-		console.log("[Sweep] Edit display classification:", {
+		logger.debug("Edit display classification:", {
 			cursorLine,
 			editStartLine,
 			editEndLine,
@@ -151,7 +152,7 @@ export class JumpEditManager implements vscode.Disposable {
 			prefixOnStartLine + result.completion + suffixOnEndLine;
 		const newLines = fullNewContent.split("\n");
 
-		console.log("[Sweep] Setting up inline diff preview:", {
+		logger.debug("Setting up inline diff preview:", {
 			startLine: startLine + 1,
 			endLine: endLine + 1,
 			originalLines: originalLines.map((l) => l.slice(0, 40)),
@@ -180,7 +181,7 @@ export class JumpEditManager implements vscode.Disposable {
 	handleCursorMove(position: vscode.Position): void {
 		if (!this.pendingJumpEdit) return;
 		if (position.line !== this.pendingJumpEdit.originCursorLine) {
-			console.log("[Sweep] Jump edit cleared: cursor moved off origin line", {
+			logger.debug("Jump edit cleared: cursor moved off origin line", {
 				originLine: this.pendingJumpEdit.originCursorLine,
 				currentLine: position.line,
 			});
@@ -441,16 +442,14 @@ export class JumpEditManager implements vscode.Disposable {
 
 	async acceptJumpEdit(): Promise<void> {
 		if (!this.pendingJumpEdit) {
-			console.log("[Sweep] acceptJumpEdit called but no pending jump edit");
+			logger.warn("acceptJumpEdit called but no pending jump edit");
 			return;
 		}
 
 		const pendingJumpEdit = this.pendingJumpEdit;
 		const editor = vscode.window.activeTextEditor;
 		if (!editor || editor.document.uri.toString() !== pendingJumpEdit.uri) {
-			console.log(
-				"[Sweep] acceptJumpEdit: editor mismatch, clearing jump edit",
-			);
+			logger.debug("acceptJumpEdit: editor mismatch, clearing jump edit");
 			this.clearJumpEdit();
 			return;
 		}
@@ -459,7 +458,7 @@ export class JumpEditManager implements vscode.Disposable {
 		const start = editor.document.positionAt(result.startIndex);
 		const end = editor.document.positionAt(result.endIndex);
 
-		console.log("[Sweep] Accepting jump edit", {
+		logger.info("Accepting jump edit", {
 			targetLine: start.line + 1,
 		});
 
@@ -487,16 +486,16 @@ export class JumpEditManager implements vscode.Disposable {
 				new vscode.Range(newPos, newPos),
 				vscode.TextEditorRevealType.InCenterIfOutsideViewport,
 			);
-			console.log("[Sweep] Jump edit applied successfully");
+			logger.info("Jump edit applied successfully");
 		} else {
-			console.error("[Sweep] Failed to apply jump edit");
+			logger.error("Failed to apply jump edit");
 		}
 
 		this.clearJumpEdit({ trackDisposed: false });
 	}
 
 	dismissJumpEdit(): void {
-		console.log("[Sweep] Jump edit dismissed by user");
+		logger.info("Jump edit dismissed by user");
 		this.clearJumpEdit();
 	}
 
@@ -542,7 +541,7 @@ export class JumpEditManager implements vscode.Disposable {
 		this.clearDecorations();
 		vscode.commands.executeCommand("setContext", "sweep.hasJumpEdit", false);
 		if (hadPending) {
-			console.log("[Sweep] Jump edit state cleared");
+			logger.debug("Jump edit state cleared");
 		}
 	}
 

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 
 import { ApiClient } from "~/api/client.ts";
+import { disposeLogger, initLogger, logger } from "~/core/logger.ts";
 import { InlineEditProvider } from "~/editor/inline-edit-provider.ts";
 import { JumpEditManager } from "~/editor/jump-edit-manager.ts";
 import {
@@ -26,6 +27,8 @@ let metricsTracker: AutocompleteMetricsTracker;
 let ollamaServer: OllamaServer;
 
 export function activate(context: vscode.ExtensionContext) {
+	const logChannel = initLogger();
+	logger.info("Sweep activated");
 	initSyntaxHighlighter();
 
 	tracker = new DocumentTracker();
@@ -161,6 +164,7 @@ export function activate(context: vscode.ExtensionContext) {
 		metricsTracker,
 		statusBar,
 		ollamaServer,
+		logChannel,
 		...statusBarCommands,
 	);
 
@@ -170,4 +174,6 @@ export function activate(context: vscode.ExtensionContext) {
 	void ollamaServer.ensureReachable();
 }
 
-export function deactivate() {}
+export function deactivate() {
+	disposeLogger();
+}
