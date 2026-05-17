@@ -81,7 +81,7 @@ export class SweepStatusBar implements vscode.Disposable {
 
 	private applyText(loading: boolean): void {
 		const icon = loading ? LOADING_FRAMES[this.loadingIndex] : "nesweep-idle";
-		this.statusBarItem.text = `$(${icon}) NESweep`;
+		this.statusBarItem.text = `$(${icon})`;
 	}
 
 	private buildTooltip(isEnabled: boolean, isSnoozed: boolean): string {
