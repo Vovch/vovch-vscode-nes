@@ -221,3 +221,38 @@ code --install-extension nesweep-*.vsix --force
 - Sweep prompt format ported from
   [cursortab.nvim](https://github.com/cursortab/cursortab.nvim).
 - Zeta-2 / Zeta-2.1 model card: [zed-industries on Hugging Face](https://huggingface.co/zed-industries).
+
+## License
+
+GNU Affero General Public License v3.0 or later — see [LICENSE](LICENSE).
+
+The upstream repository [`sweepai/vscode-nes`](https://github.com/sweepai/vscode-nes)
+does not ship a LICENSE file, but its initial commit
+([`fcdfb50`](https://github.com/sweepai/vscode-nes/commit/fcdfb50) —
+`init: Base vscode foundation based on zed impl`) is a line-for-line
+TypeScript translation of
+[`zed-industries/zed/crates/zeta/src/sweep_ai.rs`](https://github.com/zed-industries/zed/blob/76167109db7b/crates/zeta/src/sweep_ai.rs)
+— the wire-protocol structs, the `ActionType` enum with its
+`SCREAMING_SNAKE_CASE` serde rename, the brotli `(quality=11,
+lgwin=22)` params, the hardcoded `https://autocomplete.sweep.dev/...`
+endpoint, even the `// TODO`-fenced `privacy_mode_enabled: false`
+were carried over verbatim. The Rust file was removed from Zed in
+commit
+[`42583c1`](https://github.com/zed-industries/zed/commit/42583c1)
+on 2025-12-04, but at the time of the initial commit it was AGPL-3.0
+as part of the Zed editor. Translating an AGPL work into another
+language produces a derivative work covered by the same license, so
+AGPL-3.0 attaches to the entire combined codebase regardless of
+whether the upstream author shipped a LICENSE file. This fork makes
+that licensing explicit.
+
+Copyright attribution:
+
+- Zed Industries, Inc. — original `sweep_ai.rs` (AGPL-3.0), ported in
+  `src/api/schemas.ts`, `src/core/constants.ts`, and parts of
+  `src/api/client.ts`.
+- SweepAI and the upstream `sweepai/vscode-nes` contributors —
+  VS Code-side glue (extension activation, inline-edit provider,
+  document tracker, telemetry plumbing), itself a combined work
+  covered by the same AGPL terms.
+- This fork's authors — all subsequent commits.
