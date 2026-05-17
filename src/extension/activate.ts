@@ -27,7 +27,7 @@ export function activate(context: vscode.ExtensionContext) {
 	logger.info("NESweep activated");
 	initSyntaxHighlighter();
 
-	tracker = new DocumentTracker();
+	tracker = new DocumentTracker(context);
 	completionServer = new CompletionServer();
 	const apiClient = new ApiClient(completionServer);
 	jumpEditManager = new JumpEditManager();
@@ -165,6 +165,9 @@ export function activate(context: vscode.ExtensionContext) {
 	void completionServer.ensureReachable();
 }
 
-export function deactivate() {
+export async function deactivate() {
+	// Persist the tracker tail before VS Code disposes subscriptions —
+	// covers manual reloads / window closes inside the 5-min AFK window.
+	await tracker?.flush();
 	disposeLogger();
 }

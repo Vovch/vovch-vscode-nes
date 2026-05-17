@@ -5,6 +5,17 @@ import { formatRecentChangeDiff } from "~/telemetry/unified-diff.ts";
 import { toUnixPath } from "~/utils/path.ts";
 import { utf8ByteOffsetAt } from "~/utils/text.ts";
 
+// Persistence key in workspaceState. Bumping the suffix retires old
+// blobs without manual cleanup — older versions are simply ignored.
+const STATE_KEY = "sweep.tracker.v1";
+
+// Save after this much inactivity. Matches the typical LLM prefix-cache
+// TTL — once the user has been idle that long, the prior session is
+// effectively gone from the server's cache anyway, so capturing the
+// snapshot at the same boundary lines up with what's useful as context
+// when they come back.
+const AFK_DEBOUNCE_MS = 5 * 60 * 1000;
+
 interface FileSnapshot {
 	uri: string;
 	content: string;
@@ -15,6 +26,22 @@ interface FileSnapshot {
 interface CursorSnapshot {
 	line: number;
 	timestamp: number;
+}
+
+interface PersistedRecentFile {
+	uri: string;
+	timestamp: number;
+	mtime?: number;
+	cursorLine?: number;
+}
+
+interface PersistedState {
+	version: 1;
+	savedAt: number;
+	editHistory: EditRecord[];
+	userActions: UserAction[];
+	cursorPositions: Array<[string, CursorSnapshot]>;
+	recentFiles: PersistedRecentFile[];
 }
 
 interface ChangeSummary {
@@ -48,12 +75,17 @@ export class DocumentTracker implements vscode.Disposable {
 	private maxRecentFiles = 10;
 	private maxEditHistory = 10;
 	private maxUserActions = 50;
+	private context: vscode.ExtensionContext | undefined;
+	private saveTimer: ReturnType<typeof setTimeout> | null = null;
+	private dirty = false;
 
-	constructor() {
+	constructor(context?: vscode.ExtensionContext) {
+		this.context = context;
 		for (const doc of vscode.workspace.textDocuments) {
 			this.originalContents.set(doc.uri.toString(), doc.getText());
 			this.documentContents.set(doc.uri.toString(), doc.getText());
 		}
+		if (context) void this.load();
 	}
 
 	async trackFileVisit(document: vscode.TextDocument): Promise<void> {
@@ -81,6 +113,7 @@ export class DocumentTracker implements vscode.Disposable {
 		this.recentFiles.set(uri, snapshot);
 
 		this.pruneRecentFiles();
+		this.scheduleSave();
 	}
 
 	trackChange(event: vscode.TextDocumentChangeEvent): void {
@@ -164,6 +197,7 @@ export class DocumentTracker implements vscode.Disposable {
 		}
 
 		this.documentContents.set(uri, event.document.getText());
+		this.scheduleSave();
 	}
 
 	trackCursorMovement(
@@ -188,6 +222,7 @@ export class DocumentTracker implements vscode.Disposable {
 			timestamp,
 		});
 		this.pruneUserActions();
+		this.scheduleSave();
 	}
 
 	trackSelectionChange(
@@ -205,6 +240,7 @@ export class DocumentTracker implements vscode.Disposable {
 
 		if (hasMultiLine) {
 			this.lastMultiLineSelections.set(document.uri.toString(), Date.now());
+			this.scheduleSave();
 		}
 	}
 
@@ -397,7 +433,103 @@ export class DocumentTracker implements vscode.Disposable {
 		}
 	}
 
+	private scheduleSave(): void {
+		if (!this.context) return;
+		this.dirty = true;
+		if (this.saveTimer) clearTimeout(this.saveTimer);
+		this.saveTimer = setTimeout(() => {
+			this.saveTimer = null;
+			void this.flush();
+		}, AFK_DEBOUNCE_MS);
+	}
+
+	// Synchronously cancel the AFK timer and persist if dirty. Call this
+	// from deactivate() so a clean reload doesn't lose the tail of the
+	// session that hasn't crossed the 5-min boundary yet.
+	async flush(): Promise<void> {
+		if (this.saveTimer) {
+			clearTimeout(this.saveTimer);
+			this.saveTimer = null;
+		}
+		if (!this.context || !this.dirty) return;
+		this.dirty = false;
+		const state: PersistedState = {
+			version: 1,
+			savedAt: Date.now(),
+			editHistory: this.editHistory,
+			userActions: this.userActions,
+			cursorPositions: Array.from(this.cursorPositions.entries()),
+			recentFiles: Array.from(this.recentFiles.values()).map((s) => {
+				const cursor = this.cursorPositions.get(s.uri);
+				return {
+					uri: s.uri,
+					timestamp: s.timestamp,
+					...(s.mtime !== undefined ? { mtime: s.mtime } : {}),
+					...(cursor ? { cursorLine: cursor.line } : {}),
+				};
+			}),
+		};
+		try {
+			await this.context.workspaceState.update(STATE_KEY, state);
+		} catch {
+			// best-effort
+		}
+	}
+
+	private async load(): Promise<void> {
+		if (!this.context) return;
+		const raw = this.context.workspaceState.get<PersistedState>(STATE_KEY);
+		if (!raw || raw.version !== 1) return;
+
+		if (Array.isArray(raw.editHistory)) {
+			this.editHistory = raw.editHistory.slice(-this.maxEditHistory);
+		}
+		if (Array.isArray(raw.userActions)) {
+			this.userActions = raw.userActions.slice(-this.maxUserActions);
+		}
+		if (Array.isArray(raw.cursorPositions)) {
+			this.cursorPositions = new Map(raw.cursorPositions);
+		}
+
+		if (!Array.isArray(raw.recentFiles)) return;
+		// Re-read each recent file from disk so the snapshot reflects the
+		// current bytes rather than a stale copy from the previous session.
+		// Live trackFileVisit calls win the merge — they run concurrently
+		// as tabs are restored and have fresher content.
+		const decoder = new TextDecoder();
+		for (const entry of raw.recentFiles) {
+			if (this.recentFiles.has(entry.uri)) continue;
+			try {
+				const uri = vscode.Uri.parse(entry.uri);
+				if (uri.scheme !== "file") continue;
+				const stat = await vscode.workspace.fs.stat(uri);
+				const bytes = await vscode.workspace.fs.readFile(uri);
+				if (this.recentFiles.has(entry.uri)) continue;
+				const snapshot: FileSnapshot = {
+					uri: entry.uri,
+					content: decoder.decode(bytes),
+					timestamp: entry.timestamp,
+					mtime: Math.floor(stat.mtime / 1000),
+				};
+				this.recentFiles.set(entry.uri, snapshot);
+				if (entry.cursorLine !== undefined) {
+					this.cursorPositions.set(entry.uri, {
+						line: entry.cursorLine,
+						timestamp: entry.timestamp,
+					});
+				}
+			} catch {
+				// File gone or unreadable — drop the entry.
+			}
+		}
+		this.pruneRecentFiles();
+	}
+
 	dispose(): void {
+		if (this.saveTimer) {
+			clearTimeout(this.saveTimer);
+			this.saveTimer = null;
+		}
 		this.recentFiles.clear();
 		this.editHistory = [];
 		this.userActions = [];
