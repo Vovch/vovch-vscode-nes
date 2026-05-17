@@ -1,12 +1,18 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
-  <title>NESweep loading frame 4 — ...|</title>
+  <title>NESweep loading frame 4 — bristles centered (0°)</title>
   <g fill="black">
-    <circle cx="128" cy="512" r="80"/>
-    <circle cx="384" cy="512" r="80"/>
-    <circle cx="640" cy="512" r="80"/>
-    <!-- I-beam in slot 4 (x-center 896) -->
-    <rect x="848" y="80" width="96" height="60" rx="14"/>
-    <rect x="884" y="80" width="24" height="864" rx="12"/>
-    <rect x="848" y="884" width="96" height="60" rx="14"/>
+    <ellipse cx="320" cy="115" rx="55" ry="35"/>
+    <rect x="292" y="110" width="57" height="490" rx="14"/>
+    <rect x="240" y="580" width="160" height="50" rx="14"/>
   </g>
+  <g stroke="black" stroke-width="50" stroke-linecap="round" fill="none">
+    <line x1="320" y1="640" x2="180" y2="915"/>
+    <line x1="320" y1="640" x2="255" y2="935"/>
+    <line x1="320" y1="640" x2="320" y2="944"/>
+    <line x1="320" y1="640" x2="385" y2="935"/>
+    <line x1="320" y1="640" x2="460" y2="915"/>
+  </g>
+  <polyline points="580,120 900,512 580,904"
+            fill="none" stroke="black" stroke-width="110"
+            stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

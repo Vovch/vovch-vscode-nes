@@ -9,15 +9,35 @@
 
   <rect width="1024" height="1024" rx="192" fill="#1A1338"/>
 
-  <!-- I-beam text caret: serifs + stem, hints "editor cursor" -->
+  <!-- Broom: cap + handle + band, matches font-glyph proportions -->
   <g fill="#FFFFFF">
-    <rect x="240" y="280" width="240" height="56" rx="14"/>
-    <rect x="332" y="280" width="56" height="464" rx="14"/>
-    <rect x="240" y="688" width="240" height="56" rx="14"/>
+    <ellipse cx="320" cy="115" rx="55" ry="35"/>
+    <rect x="292" y="110" width="57" height="490" rx="14"/>
+    <rect x="240" y="580" width="160" height="50" rx="14"/>
   </g>
 
-  <!-- Forward chevron with gradient: "next edit", AI motion -->
-  <polyline points="560,320 760,512 560,704"
-            fill="none" stroke="url(#chev)" stroke-width="80"
+  <!-- Detailed bristle fan: 11 strands hanging straight down from below
+       the band. Each strand is a quadratic Bezier whose control point
+       lies on the bisector between the vertical fall-direction and the
+       strand's own chord — so every bristle starts vertical then curves
+       smoothly out to its tip. Symmetric around x=320, no inward dips.
+       Varied stroke widths simulate main + secondary strands. -->
+  <g stroke="#FFFFFF" stroke-linecap="round" fill="none">
+    <path d="M 320 640 Q 284 765 150 905" stroke-width="30"/>
+    <path d="M 320 640 Q 290 766 180 915" stroke-width="48"/>
+    <path d="M 320 640 Q 298 768 220 928" stroke-width="34"/>
+    <path d="M 320 640 Q 306 769 255 935" stroke-width="50"/>
+    <path d="M 320 640 Q 314 770 290 940" stroke-width="38"/>
+    <path d="M 320 640 Q 320 770 320 944" stroke-width="52"/>
+    <path d="M 320 640 Q 327 770 350 940" stroke-width="38"/>
+    <path d="M 320 640 Q 334 769 385 935" stroke-width="50"/>
+    <path d="M 320 640 Q 342 768 420 928" stroke-width="34"/>
+    <path d="M 320 640 Q 350 766 460 915" stroke-width="48"/>
+    <path d="M 320 640 Q 357 765 490 905" stroke-width="30"/>
+  </g>
+
+  <!-- Forward chevron with white→cyan gradient (next-edit motion) -->
+  <polyline points="580,120 900,512 580,904"
+            fill="none" stroke="url(#chev)" stroke-width="110"
             stroke-linecap="round" stroke-linejoin="round"/>
 </svg>

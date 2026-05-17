@@ -1,12 +1,22 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
   <title>NESweep glyph (source for nesweep-icons.woff2)</title>
   <g fill="black">
-    <!-- I-beam text caret: bold serifs + stem, fills ~88% of EM vertically -->
-    <rect x="160" y="80" width="320" height="100" rx="20"/>
-    <rect x="270" y="80" width="100" height="864" rx="20"/>
-    <rect x="160" y="844" width="320" height="100" rx="20"/>
+    <!-- Broom cap (knob at top) -->
+    <ellipse cx="320" cy="115" rx="55" ry="35"/>
+    <!-- Handle (vertical stem) -->
+    <rect x="292" y="110" width="57" height="490" rx="14"/>
+    <!-- Wrap band where bristles attach -->
+    <rect x="240" y="580" width="160" height="50" rx="14"/>
   </g>
-  <!-- Chevron > as stroked polyline; fontforge converts stroke to filled outline on import -->
+  <!-- Bristles: 5 thick strands fanning from just below the band -->
+  <g stroke="black" stroke-width="50" stroke-linecap="round" fill="none">
+    <line x1="320" y1="640" x2="180" y2="915"/>
+    <line x1="320" y1="640" x2="255" y2="935"/>
+    <line x1="320" y1="640" x2="320" y2="944"/>
+    <line x1="320" y1="640" x2="385" y2="935"/>
+    <line x1="320" y1="640" x2="460" y2="915"/>
+  </g>
+  <!-- Chevron > unchanged -->
   <polyline points="580,120 900,512 580,904"
             fill="none" stroke="black" stroke-width="110"
             stroke-linecap="round" stroke-linejoin="round"/>
