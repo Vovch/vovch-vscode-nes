@@ -109,15 +109,14 @@ export function registerStatusBarCommands(
 				const limit = config.rulesMaxChars;
 				let description: string;
 				let overflow = false;
-				try {
-					const stat = fs.statSync(rulesPath);
-					const size = stat.size;
-					overflow = limit > 0 && size > limit;
-					description = overflow
-						? `${path.basename(rulesPath)} — ${size} chars (${size - limit} over)`
-						: `${path.basename(rulesPath)} — ${size} chars`;
-				} catch {
+				const charCount = readRulesCharCount(rulesPath);
+				if (charCount === null) {
 					description = `No instructions yet — click to create ${path.basename(rulesPath)}`;
+				} else {
+					overflow = limit > 0 && charCount > limit;
+					description = overflow
+						? `${path.basename(rulesPath)} — ${charCount} chars (${charCount - limit} over)`
+						: `${path.basename(rulesPath)} — ${charCount} chars`;
 				}
 				items.push({
 					label: `$(${overflow ? "warning" : "edit"}) Edit Instructions for ${lang}`,
@@ -225,6 +224,22 @@ async function handleSnooze(): Promise<void> {
 async function handleResumeSnooze(): Promise<void> {
 	await config.setAutocompleteSnoozeUntil(0, vscode.ConfigurationTarget.Global);
 	vscode.window.showInformationMessage("NESweep autocomplete resumed.");
+}
+
+// Match the diagnostic's notion of "chars": UTF-16 code units, which
+// is what VS Code's selection counter and getText().length report. If
+// the file is already open, prefer its in-memory text (it may have
+// unsaved edits); otherwise read from disk.
+function readRulesCharCount(rulesPath: string): number | null {
+	const open = vscode.workspace.textDocuments.find(
+		(d) => d.uri.scheme === "file" && d.uri.fsPath === rulesPath,
+	);
+	if (open) return open.getText().length;
+	try {
+		return fs.readFileSync(rulesPath, "utf8").length;
+	} catch {
+		return null;
+	}
 }
 
 async function openRulesFile(rulesPath: string): Promise<void> {
