@@ -61,9 +61,16 @@ function retrievalChunkLines(): number {
 export class ApiClient {
 	private server: CompletionServer;
 	private idCounter = 0;
+	private inFlight = 0;
+	private readonly processingEmitter = new vscode.EventEmitter<boolean>();
+	readonly onDidChangeProcessing = this.processingEmitter.event;
 
 	constructor(server: CompletionServer) {
 		this.server = server;
+	}
+
+	get isProcessing(): boolean {
+		return this.inFlight > 0;
 	}
 
 	async getAutocomplete(
@@ -118,6 +125,8 @@ export class ApiClient {
 			`→ /v1/completions format=${format} model=${config.modelName} max_tokens=${MAX_TOKENS} prompt_chars=${prompt.prompt.length}`,
 		);
 		logger.trace("→ /v1/completions raw prompt:", prompt.prompt);
+		this.inFlight++;
+		if (this.inFlight === 1) this.processingEmitter.fire(true);
 		try {
 			const completion = await this.server.getClient().complete(
 				{
@@ -205,6 +214,9 @@ export class ApiClient {
 			);
 			this.server.reportFailure();
 			return null;
+		} finally {
+			this.inFlight--;
+			if (this.inFlight === 0) this.processingEmitter.fire(false);
 		}
 	}
 

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <title>NESweep loading frame 1 — |...</title>
+  <g fill="black">
+    <!-- I-beam in slot 1 (x-center 128), fills ~88% EM vertically to match idle glyph -->
+    <rect x="80" y="80" width="96" height="60" rx="14"/>
+    <rect x="116" y="80" width="24" height="864" rx="12"/>
+    <rect x="80" y="884" width="96" height="60" rx="14"/>
+    <!-- Dots in slots 2, 3, 4 -->
+    <circle cx="384" cy="512" r="80"/>
+    <circle cx="640" cy="512" r="80"/>
+    <circle cx="896" cy="512" r="80"/>
+  </g>
+</svg>

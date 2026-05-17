@@ -2,15 +2,30 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as vscode from "vscode";
 
+import type { ApiClient } from "~/api/client.ts";
 import { getRulesFilePath } from "~/api/rules.ts";
 import { config } from "~/core/config";
 import type { CompletionServer } from "~/services/completion-server.ts";
 
+// Cycle through the four loading frames every LOADING_FRAME_MS. ~600ms
+// per full cycle reads as activity without becoming distracting.
+const LOADING_FRAMES = [
+	"nesweep-load-1",
+	"nesweep-load-2",
+	"nesweep-load-3",
+	"nesweep-load-4",
+];
+const LOADING_FRAME_MS = 150;
+
 export class SweepStatusBar implements vscode.Disposable {
 	private statusBarItem: vscode.StatusBarItem;
 	private disposables: vscode.Disposable[] = [];
+	private apiClient: ApiClient;
+	private loadingTimer: ReturnType<typeof setInterval> | null = null;
+	private loadingIndex = 0;
 
-	constructor(_context: vscode.ExtensionContext) {
+	constructor(_context: vscode.ExtensionContext, apiClient: ApiClient) {
+		this.apiClient = apiClient;
 		this.statusBarItem = vscode.window.createStatusBarItem(
 			vscode.StatusBarAlignment.Right,
 			100,
@@ -27,6 +42,7 @@ export class SweepStatusBar implements vscode.Disposable {
 					this.updateStatusBar();
 				}
 			}),
+			apiClient.onDidChangeProcessing(() => this.updateStatusBar()),
 		);
 
 		this.statusBarItem.show();
@@ -35,8 +51,23 @@ export class SweepStatusBar implements vscode.Disposable {
 	private updateStatusBar(): void {
 		const isEnabled = config.enabled;
 		const isSnoozed = config.isAutocompleteSnoozed();
+		const isProcessing = this.apiClient.isProcessing;
 
-		this.statusBarItem.text = "NESweep";
+		if (isProcessing) {
+			if (!this.loadingTimer) {
+				this.loadingIndex = 0;
+				this.loadingTimer = setInterval(() => {
+					this.loadingIndex =
+						(this.loadingIndex + 1) % LOADING_FRAMES.length;
+					this.applyText(true);
+				}, LOADING_FRAME_MS);
+			}
+		} else if (this.loadingTimer) {
+			clearInterval(this.loadingTimer);
+			this.loadingTimer = null;
+		}
+
+		this.applyText(isProcessing);
 		this.statusBarItem.tooltip = this.buildTooltip(isEnabled, isSnoozed);
 
 		if (!isEnabled || isSnoozed) {
@@ -46,6 +77,11 @@ export class SweepStatusBar implements vscode.Disposable {
 		} else {
 			this.statusBarItem.backgroundColor = undefined;
 		}
+	}
+
+	private applyText(loading: boolean): void {
+		const icon = loading ? LOADING_FRAMES[this.loadingIndex] : "nesweep-idle";
+		this.statusBarItem.text = `$(${icon}) NESweep`;
 	}
 
 	private buildTooltip(isEnabled: boolean, isSnoozed: boolean): string {
@@ -58,6 +94,10 @@ export class SweepStatusBar implements vscode.Disposable {
 	}
 
 	dispose(): void {
+		if (this.loadingTimer) {
+			clearInterval(this.loadingTimer);
+			this.loadingTimer = null;
+		}
 		this.statusBarItem.dispose();
 		for (const disposable of this.disposables) {
 			disposable.dispose();

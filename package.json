@@ -2,7 +2,7 @@
 	"name": "nesweep",
 	"displayName": "NESweep autocompletion",
 	"description": "Next Edit Autocomplete using Sweep Model",
-	"version": "0.5.0",
+	"version": "1.0.0",
 	"publisher": "sr-tream",
 	"author": {
 		"name": "SR_team"
@@ -33,6 +33,43 @@
 	],
 	"main": "./out/extension.js",
 	"contributes": {
+		"icons": {
+			"nesweep-idle": {
+				"description": "NESweep idle icon",
+				"default": {
+					"fontPath": "assets/nesweep-icons.woff2",
+					"fontCharacter": "\\ea01"
+				}
+			},
+			"nesweep-load-1": {
+				"description": "NESweep loading frame 1 — |...",
+				"default": {
+					"fontPath": "assets/nesweep-icons.woff2",
+					"fontCharacter": "\\ea02"
+				}
+			},
+			"nesweep-load-2": {
+				"description": "NESweep loading frame 2 — .|..",
+				"default": {
+					"fontPath": "assets/nesweep-icons.woff2",
+					"fontCharacter": "\\ea03"
+				}
+			},
+			"nesweep-load-3": {
+				"description": "NESweep loading frame 3 — ..|.",
+				"default": {
+					"fontPath": "assets/nesweep-icons.woff2",
+					"fontCharacter": "\\ea04"
+				}
+			},
+			"nesweep-load-4": {
+				"description": "NESweep loading frame 4 — ...|",
+				"default": {
+					"fontPath": "assets/nesweep-icons.woff2",
+					"fontCharacter": "\\ea05"
+				}
+			}
+		},
 		"commands": [
 			{
 				"command": "sweep.triggerNextEdit",

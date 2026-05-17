@@ -76,7 +76,7 @@ export function activate(context: vscode.ExtensionContext) {
 		() => jumpEditManager.dismissJumpEdit(),
 	);
 
-	statusBar = new SweepStatusBar(context);
+	statusBar = new SweepStatusBar(context, apiClient);
 	const statusBarCommands = registerStatusBarCommands(
 		context,
 		completionServer,
