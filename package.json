@@ -2,7 +2,7 @@
 	"name": "nesweep",
 	"displayName": "NESweep autocompletion",
 	"description": "Next Edit Autocomplete using Sweep Model",
-	"version": "1.0.0",
+	"version": "1.1.0",
 	"publisher": "SR-team",
 	"author": {
 		"name": "SR_team"
@@ -147,6 +147,12 @@
 					"type": "number",
 					"default": 5,
 					"markdownDescription": "Maximum number of recently-viewed files to bundle into the prompt as additional context (open editors + LSP definitions / usages). Higher values give the model more to work with at the cost of a longer prompt and slower first-token latency."
+				},
+				"sweep.maxEditHistory": {
+					"type": "number",
+					"default": 15,
+					"minimum": 1,
+					"markdownDescription": "Total number of recent-edit diffs surfaced in the prompt. The budget is split: ~20% reserved as a floor for the active file so its history survives long stints in other files, ~40% spread across up to `#sweep.maxContextFiles#` other recent files, and the remainder fills from the active file's recent activity. Typing-burst edits on the same line within 60 s are coalesced before counting against the budget."
 				},
 				"sweep.autocompleteExclusionPatterns": {
 					"type": "array",

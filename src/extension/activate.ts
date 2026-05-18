@@ -110,8 +110,11 @@ export function activate(context: vscode.ExtensionContext) {
 	const editorChangeListener = vscode.window.onDidChangeActiveTextEditor(
 		(editor) => {
 			if (editor) {
+				tracker.setActiveFile(editor.document);
 				tracker.trackFileVisit(editor.document);
 				handleCursorMove(editor);
+			} else {
+				tracker.setActiveFile(null);
 			}
 		},
 	);
@@ -135,6 +138,7 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	if (vscode.window.activeTextEditor) {
+		tracker.setActiveFile(vscode.window.activeTextEditor.document);
 		tracker.trackFileVisit(vscode.window.activeTextEditor.document);
 		handleCursorMove(vscode.window.activeTextEditor);
 	}

@@ -57,8 +57,7 @@ export class SweepStatusBar implements vscode.Disposable {
 			if (!this.loadingTimer) {
 				this.loadingIndex = 0;
 				this.loadingTimer = setInterval(() => {
-					this.loadingIndex =
-						(this.loadingIndex + 1) % LOADING_FRAMES.length;
+					this.loadingIndex = (this.loadingIndex + 1) % LOADING_FRAMES.length;
 					this.applyText(true);
 				}, LOADING_FRAME_MS);
 			}

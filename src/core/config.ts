@@ -7,6 +7,7 @@ import {
 	DEFAULT_COMPLETION_TIMEOUT_MS,
 	DEFAULT_DIAG_RADIUS,
 	DEFAULT_MAX_CONTEXT_FILES,
+	DEFAULT_MAX_EDIT_HISTORY,
 	DEFAULT_RULES_MAX_CHARS,
 	DEFAULT_SERVER_URL,
 	MODEL_NAME,
@@ -34,6 +35,10 @@ export class SweepConfig {
 			"maxContextFiles",
 			DEFAULT_MAX_CONTEXT_FILES,
 		);
+	}
+
+	get maxEditHistory(): number {
+		return this.config.get<number>("maxEditHistory", DEFAULT_MAX_EDIT_HISTORY);
 	}
 
 	get autocompleteExclusionPatterns(): string[] {

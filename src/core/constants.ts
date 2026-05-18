@@ -1,5 +1,10 @@
 // Default configuration
 export const DEFAULT_MAX_CONTEXT_FILES = 5;
+// Overall cap on the recent-edit diffs surfaced in the prompt. Budget is
+// partitioned at read time: a 20% floor for the active file, ~40% spread
+// across other recent files (capped by DEFAULT_MAX_CONTEXT_FILES), the
+// remainder fills from the active file's recent activity.
+export const DEFAULT_MAX_EDIT_HISTORY = 15;
 export const DEFAULT_SERVER_URL = "http://localhost:8080";
 export const DEFAULT_COMPLETION_TIMEOUT_MS = 10_000;
 // Drop diagnostics whose line is more than this many lines from the cursor.

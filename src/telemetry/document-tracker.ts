@@ -1,13 +1,28 @@
 import * as vscode from "vscode";
 
 import type { ActionType, UserAction } from "~/api/schemas.ts";
+import { config } from "~/core/config.ts";
+import { shouldCoalesce } from "~/telemetry/edit-merger.ts";
 import { formatRecentChangeDiff } from "~/telemetry/unified-diff.ts";
 import { toUnixPath } from "~/utils/path.ts";
 import { utf8ByteOffsetAt } from "~/utils/text.ts";
 
 // Persistence key in workspaceState. Bumping the suffix retires old
-// blobs without manual cleanup — older versions are simply ignored.
-const STATE_KEY = "sweep.tracker.v1";
+// blobs — load() migrates from LEGACY_STATE_KEY_V1 when present.
+const STATE_KEY = "sweep.tracker.v2";
+const LEGACY_STATE_KEY_V1 = "sweep.tracker.v1";
+
+// Schemes we treat as real editing surfaces. Everything else — Output
+// panel (`output:`), SCM diff editors (`vscode-scm:`), settings.json
+// (`vscode-userdata:`), git history views (`git:`), search results,
+// notebook scratchpads, etc. — is ignored so it doesn't show up as a
+// "recent file" in the prompt (e.g. `<|file_sep|>SR-team.nesweep.NESweep.log`
+// when the user peeks at the Output panel).
+const TRACKABLE_SCHEMES = new Set(["file", "untitled", "vscode-remote"]);
+
+function isTrackable(document: vscode.TextDocument): boolean {
+	return TRACKABLE_SCHEMES.has(document.uri.scheme);
+}
 
 // Save after this much inactivity. Matches the typical LLM prefix-cache
 // TTL — once the user has been idle that long, the prior session is
@@ -35,7 +50,24 @@ interface PersistedRecentFile {
 	cursorLine?: number;
 }
 
+interface PersistedFileEditBucket {
+	filepath: string;
+	lastEditTimestamp: number;
+	records: EditRecord[];
+}
+
 interface PersistedState {
+	version: 2;
+	savedAt: number;
+	recentFileEditBuckets: PersistedFileEditBucket[];
+	userActions: UserAction[];
+	cursorPositions: Array<[string, CursorSnapshot]>;
+	recentFiles: PersistedRecentFile[];
+}
+
+// Legacy shape kept around purely so load() can migrate users who still
+// have a v1 blob in workspaceState. Drop once everyone has cycled.
+interface PersistedStateV1 {
 	version: 1;
 	savedAt: number;
 	editHistory: EditRecord[];
@@ -65,16 +97,28 @@ export interface ContextFile {
 
 export class DocumentTracker implements vscode.Disposable {
 	private recentFiles = new Map<string, FileSnapshot>();
-	private editHistory: EditRecord[] = [];
+	private editHistoryByFile = new Map<string, EditRecord[]>();
 	private userActions: UserAction[] = [];
 	private originalContents = new Map<string, string>();
 	private documentContents = new Map<string, string>();
 	private cursorPositions = new Map<string, CursorSnapshot>();
 	private lastChangeSummaries = new Map<string, ChangeSummary>();
 	private lastMultiLineSelections = new Map<string, number>();
+	private activeFilepath: string | null = null;
 	private maxRecentFiles = 10;
-	private maxEditHistory = 10;
 	private maxUserActions = 50;
+	// Generous in-memory cap per file; the read-time rebalancer trims
+	// further. Persistence layer caps to a smaller K_PERSIST.
+	private static readonly INTERNAL_PER_FILE_CAP = 15;
+	private static readonly TRACKED_FILES_CAP = 10;
+	// Active-file floor: ~20% of TOTAL reserved so a just-reopened file
+	// keeps its old edits even when other files have filled the buffer.
+	private static readonly ACTIVE_FLOOR_FRAC = 0.2;
+	// Share of TOTAL spread across non-active recent files.
+	private static readonly OTHERS_SHARE_FRAC = 0.4;
+	// Per-file cap at flush time. Smaller than INTERNAL_PER_FILE_CAP so
+	// workspaceState stays lean (≤ 50 records across 10 files).
+	private static readonly K_PERSIST = 5;
 	private context: vscode.ExtensionContext | undefined;
 	private saveTimer: ReturnType<typeof setTimeout> | null = null;
 	private dirty = false;
@@ -82,13 +126,25 @@ export class DocumentTracker implements vscode.Disposable {
 	constructor(context?: vscode.ExtensionContext) {
 		this.context = context;
 		for (const doc of vscode.workspace.textDocuments) {
+			if (!isTrackable(doc)) continue;
 			this.originalContents.set(doc.uri.toString(), doc.getText());
 			this.documentContents.set(doc.uri.toString(), doc.getText());
 		}
 		if (context) void this.load();
 	}
 
+	setActiveFile(document: vscode.TextDocument | null): void {
+		if (document && !isTrackable(document)) {
+			// Leave the previous active file in place. Switching focus to
+			// the Output panel, an SCM diff, settings.json (vscode-userdata),
+			// etc. shouldn't drop the real editor's reserved slot.
+			return;
+		}
+		this.activeFilepath = document ? toUnixPath(document.fileName) : null;
+	}
+
 	async trackFileVisit(document: vscode.TextDocument): Promise<void> {
+		if (!isTrackable(document)) return;
 		const uri = document.uri.toString();
 
 		if (!this.originalContents.has(uri)) {
@@ -117,6 +173,7 @@ export class DocumentTracker implements vscode.Disposable {
 	}
 
 	trackChange(event: vscode.TextDocumentChangeEvent): void {
+		if (!isTrackable(event.document)) return;
 		const filepath = toUnixPath(event.document.fileName);
 		const uri = event.document.uri.toString();
 		const now = Date.now();
@@ -151,8 +208,7 @@ export class DocumentTracker implements vscode.Disposable {
 						change.rangeLength,
 					);
 			if (diff) {
-				this.editHistory.push({ filepath, diff, timestamp: now });
-				this.pruneEditHistory();
+				this.pushEditRecord({ filepath, diff, timestamp: now });
 			}
 
 			if (undoRedoActionType) {
@@ -204,6 +260,7 @@ export class DocumentTracker implements vscode.Disposable {
 		document: vscode.TextDocument,
 		position: vscode.Position,
 	): void {
+		if (!isTrackable(document)) return;
 		const filepath = toUnixPath(document.fileName);
 		const offset = utf8ByteOffsetAt(document, position);
 		const uri = document.uri.toString();
@@ -229,6 +286,7 @@ export class DocumentTracker implements vscode.Disposable {
 		document: vscode.TextDocument,
 		selections: readonly vscode.Selection[],
 	): void {
+		if (!isTrackable(document)) return;
 		let hasMultiLine = false;
 		for (const selection of selections) {
 			if (selection.isEmpty) continue;
@@ -299,8 +357,79 @@ export class DocumentTracker implements vscode.Disposable {
 			});
 	}
 
+	// Read-time rebalancer. Partitions a TOTAL budget across the active
+	// file and up to `maxContextFiles` other recent files:
+	//   - ACTIVE_FLOOR = ceil(TOTAL * 0.20) is reserved for the active
+	//     file (only honoured if it has that many records).
+	//   - OTHERS_TOTAL = floor(TOTAL * 0.40) is spread across the top-N
+	//     non-active buckets (perOther = floor(OTHERS_TOTAL / N), min 1).
+	//   - Remainder fills from the active file's recent activity.
+	//   - If the active file under-spends, a round-robin slack pass tops
+	//     up from the same top-N other buckets (does not introduce new
+	//     files beyond the cap).
 	getEditDiffHistory(): EditRecord[] {
-		return [...this.editHistory].sort((a, b) => b.timestamp - a.timestamp);
+		const TOTAL = Math.max(1, config.maxEditHistory);
+		const ACTIVE_FLOOR = Math.ceil(TOTAL * DocumentTracker.ACTIVE_FLOOR_FRAC);
+		const OTHERS_TOTAL = Math.floor(TOTAL * DocumentTracker.OTHERS_SHARE_FRAC);
+
+		const activeFp = this.activeFilepath;
+		const activeBucket = activeFp
+			? (this.editHistoryByFile.get(activeFp) ?? [])
+			: [];
+
+		const otherBuckets: Array<[string, EditRecord[]]> = [];
+		for (const [fp, recs] of this.editHistoryByFile) {
+			if (fp === activeFp) continue;
+			if (recs.length === 0) continue;
+			otherBuckets.push([fp, recs]);
+		}
+		otherBuckets.sort(
+			(a, b) =>
+				(b[1][b[1].length - 1]?.timestamp ?? 0) -
+				(a[1][a[1].length - 1]?.timestamp ?? 0),
+		);
+
+		const maxContextFiles = Math.max(0, config.maxContextFiles);
+		const otherFilesCap = Math.min(maxContextFiles, otherBuckets.length);
+		const perOther =
+			otherFilesCap > 0
+				? Math.max(1, Math.floor(OTHERS_TOTAL / otherFilesCap))
+				: 0;
+
+		const consumed = new Map<string, number>();
+		const picked: EditRecord[] = [];
+		const includedBuckets = otherBuckets.slice(0, otherFilesCap);
+
+		for (const [fp, recs] of includedBuckets) {
+			const take = Math.min(perOther, recs.length);
+			picked.push(...recs.slice(recs.length - take));
+			consumed.set(fp, take);
+		}
+
+		const othersPicked = picked.length;
+		const activeBudget = Math.max(ACTIVE_FLOOR, TOTAL - othersPicked);
+		const activeTake = Math.min(activeBudget, activeBucket.length);
+		picked.push(...activeBucket.slice(activeBucket.length - activeTake));
+
+		if (picked.length < TOTAL && includedBuckets.length > 0) {
+			let progressed = true;
+			while (picked.length < TOTAL && progressed) {
+				progressed = false;
+				for (const [fp, recs] of includedBuckets) {
+					if (picked.length >= TOTAL) break;
+					const used = consumed.get(fp) ?? 0;
+					if (used >= recs.length) continue;
+					const idx = recs.length - 1 - used;
+					const next = recs[idx];
+					if (next === undefined) continue;
+					picked.push(next);
+					consumed.set(fp, used + 1);
+					progressed = true;
+				}
+			}
+		}
+
+		return picked.sort((a, b) => b.timestamp - a.timestamp);
 	}
 
 	getUserActions(
@@ -369,6 +498,34 @@ export class DocumentTracker implements vscode.Disposable {
 		this.originalContents.set(uri, content);
 	}
 
+	private pushEditRecord(record: EditRecord): void {
+		const existing = this.editHistoryByFile.get(record.filepath) ?? [];
+		const merged = existing.filter(
+			(e) => !shouldCoalesce(e, record, record.timestamp),
+		);
+		merged.push(record);
+		const trimmed =
+			merged.length > DocumentTracker.INTERNAL_PER_FILE_CAP
+				? merged.slice(-DocumentTracker.INTERNAL_PER_FILE_CAP)
+				: merged;
+		this.editHistoryByFile.set(record.filepath, trimmed);
+		this.pruneEditHistoryByFile();
+	}
+
+	private pruneEditHistoryByFile(): void {
+		if (this.editHistoryByFile.size <= DocumentTracker.TRACKED_FILES_CAP)
+			return;
+		// Evict files with the oldest newest-record timestamp.
+		const entries = Array.from(this.editHistoryByFile.entries()).sort(
+			(a, b) =>
+				(b[1][b[1].length - 1]?.timestamp ?? 0) -
+				(a[1][a[1].length - 1]?.timestamp ?? 0),
+		);
+		this.editHistoryByFile = new Map(
+			entries.slice(0, DocumentTracker.TRACKED_FILES_CAP),
+		);
+	}
+
 	private formatDiff(
 		filepath: string,
 		range: vscode.Range,
@@ -421,12 +578,6 @@ export class DocumentTracker implements vscode.Disposable {
 		this.recentFiles = new Map(sorted.slice(0, this.maxRecentFiles));
 	}
 
-	private pruneEditHistory(): void {
-		if (this.editHistory.length > this.maxEditHistory) {
-			this.editHistory = this.editHistory.slice(-this.maxEditHistory);
-		}
-	}
-
 	private pruneUserActions(): void {
 		if (this.userActions.length > this.maxUserActions) {
 			this.userActions = this.userActions.slice(-this.maxUserActions);
@@ -453,10 +604,25 @@ export class DocumentTracker implements vscode.Disposable {
 		}
 		if (!this.context || !this.dirty) return;
 		this.dirty = false;
+		const recentFileEditBuckets: PersistedFileEditBucket[] = [];
+		for (const [filepath, recs] of this.editHistoryByFile) {
+			if (recs.length === 0) continue;
+			const persistedRecs =
+				recs.length > DocumentTracker.K_PERSIST
+					? recs.slice(-DocumentTracker.K_PERSIST)
+					: recs;
+			const last = persistedRecs[persistedRecs.length - 1];
+			if (!last) continue;
+			recentFileEditBuckets.push({
+				filepath,
+				lastEditTimestamp: last.timestamp,
+				records: persistedRecs,
+			});
+		}
 		const state: PersistedState = {
-			version: 1,
+			version: 2,
 			savedAt: Date.now(),
-			editHistory: this.editHistory,
+			recentFileEditBuckets,
 			userActions: this.userActions,
 			cursorPositions: Array.from(this.cursorPositions.entries()),
 			recentFiles: Array.from(this.recentFiles.values()).map((s) => {
@@ -478,17 +644,72 @@ export class DocumentTracker implements vscode.Disposable {
 
 	private async load(): Promise<void> {
 		if (!this.context) return;
-		const raw = this.context.workspaceState.get<PersistedState>(STATE_KEY);
-		if (!raw || raw.version !== 1) return;
-
-		if (Array.isArray(raw.editHistory)) {
-			this.editHistory = raw.editHistory.slice(-this.maxEditHistory);
+		let raw: PersistedState | PersistedStateV1 | undefined =
+			this.context.workspaceState.get<PersistedState>(STATE_KEY);
+		let migratedFromV1 = false;
+		if (!raw) {
+			const legacy =
+				this.context.workspaceState.get<PersistedStateV1>(LEGACY_STATE_KEY_V1);
+			if (legacy?.version === 1) {
+				raw = legacy;
+				migratedFromV1 = true;
+			}
 		}
+		if (!raw) return;
+		if (raw.version !== 2 && raw.version !== 1) return;
+
+		if (raw.version === 2 && Array.isArray(raw.recentFileEditBuckets)) {
+			for (const bucket of raw.recentFileEditBuckets) {
+				if (!bucket || !Array.isArray(bucket.records)) continue;
+				if (typeof bucket.filepath !== "string") continue;
+				if (bucket.records.length === 0) continue;
+				const trimmed =
+					bucket.records.length > DocumentTracker.INTERNAL_PER_FILE_CAP
+						? bucket.records.slice(-DocumentTracker.INTERNAL_PER_FILE_CAP)
+						: bucket.records;
+				this.editHistoryByFile.set(bucket.filepath, trimmed);
+			}
+			this.pruneEditHistoryByFile();
+		} else if (raw.version === 1 && Array.isArray(raw.editHistory)) {
+			// Migrate flat v1 history into per-file buckets. Records are
+			// already chronological (push order). pushEditRecord runs the
+			// merger so adjacent same-line records from a typing burst that
+			// got persisted mid-window collapse on the way in.
+			const sorted = [...raw.editHistory].sort(
+				(a, b) => a.timestamp - b.timestamp,
+			);
+			for (const record of sorted) {
+				if (
+					!record ||
+					typeof record.filepath !== "string" ||
+					typeof record.diff !== "string" ||
+					typeof record.timestamp !== "number"
+				)
+					continue;
+				this.pushEditRecord(record);
+			}
+		}
+
 		if (Array.isArray(raw.userActions)) {
 			this.userActions = raw.userActions.slice(-this.maxUserActions);
 		}
 		if (Array.isArray(raw.cursorPositions)) {
 			this.cursorPositions = new Map(raw.cursorPositions);
+		}
+
+		// Mark dirty so the first AFK debounce (or deactivate flush) writes
+		// the migrated v2 blob. Also drop the v1 entry so it doesn't
+		// keep getting re-imported on every reload.
+		if (migratedFromV1) {
+			this.dirty = true;
+			try {
+				await this.context.workspaceState.update(
+					LEGACY_STATE_KEY_V1,
+					undefined,
+				);
+			} catch {
+				// best-effort
+			}
 		}
 
 		if (!Array.isArray(raw.recentFiles)) return;
@@ -531,12 +752,13 @@ export class DocumentTracker implements vscode.Disposable {
 			this.saveTimer = null;
 		}
 		this.recentFiles.clear();
-		this.editHistory = [];
+		this.editHistoryByFile.clear();
 		this.userActions = [];
 		this.originalContents.clear();
 		this.documentContents.clear();
 		this.cursorPositions.clear();
 		this.lastChangeSummaries.clear();
 		this.lastMultiLineSelections.clear();
+		this.activeFilepath = null;
 	}
 }
