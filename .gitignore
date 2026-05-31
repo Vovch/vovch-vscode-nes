@@ -1,7 +1,8 @@
 # dependencies (bun install)
 node_modules
-# pnpm fallback when bun isn't available — not the canonical lockfile
+# npm/pnpm fallbacks when bun isn't available — bun.lock is the canonical lockfile
 pnpm-lock.yaml
+package-lock.json
 
 # output
 out
