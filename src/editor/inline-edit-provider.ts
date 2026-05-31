@@ -4,6 +4,10 @@ import type { AutocompleteResult } from "~/api/schemas.ts";
 import { config } from "~/core/config";
 import { logger } from "~/core/logger.ts";
 import type { JumpEditManager } from "~/editor/jump-edit-manager.ts";
+import {
+	clampEditRangeToCompletion,
+	normalizeEditResultAtCursor,
+} from "~/api/clamp-edit-range.ts";
 import type { DocumentTracker } from "~/telemetry/document-tracker.ts";
 import { toUnixPath } from "~/utils/path.ts";
 import { isFileTooLarge, utf8ByteOffsetAt } from "~/utils/text.ts";
@@ -493,6 +497,12 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 		position: vscode.Position,
 		result: AutocompleteResult,
 	): vscode.InlineCompletionList | undefined {
+		const clamped = clampEditRangeToCompletion(document, result);
+		if (!clamped || clamped.completion.length === 0) {
+			return undefined;
+		}
+		result = clamped;
+
 		const cursorOffset = document.offsetAt(position);
 		const startPosition = document.positionAt(result.startIndex);
 		const endPosition = document.positionAt(result.endIndex);
@@ -1096,30 +1106,38 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 	): AutocompleteResult | null {
 		const cursorOffset = document.offsetAt(position);
 
-		if (result.startIndex >= cursorOffset)
-			return this.trimSuffixOverlap(document, position, result);
+		let working = result;
+		const stripped = normalizeEditResultAtCursor(document, position, working);
+		if (!stripped) return null;
+		working = stripped;
+
+		if (working.startIndex >= cursorOffset) {
+			return this.trimSuffixOverlap(document, position, working);
+		}
 
 		const prefixBeforeCursor = document.getText(
-			new vscode.Range(document.positionAt(result.startIndex), position),
+			new vscode.Range(document.positionAt(working.startIndex), position),
 		);
 
-		if (!result.completion.startsWith(prefixBeforeCursor)) return result;
+		if (!working.completion.startsWith(prefixBeforeCursor)) {
+			return clampEditRangeToCompletion(document, working);
+		}
 
-		const trimmedCompletion = result.completion.slice(
+		const trimmedCompletion = working.completion.slice(
 			prefixBeforeCursor.length,
 		);
 		if (trimmedCompletion.length === 0) return null;
 
 		const trimmedResult: AutocompleteResult = {
-			...result,
+			...working,
 			startIndex: cursorOffset,
 			endIndex: cursorOffset,
 			completion: trimmedCompletion,
 		};
-		if (result.cursorTargetOffset !== undefined) {
-			if (result.cursorTargetOffset >= prefixBeforeCursor.length) {
+		if (working.cursorTargetOffset !== undefined) {
+			if (working.cursorTargetOffset >= prefixBeforeCursor.length) {
 				trimmedResult.cursorTargetOffset =
-					result.cursorTargetOffset - prefixBeforeCursor.length;
+					working.cursorTargetOffset - prefixBeforeCursor.length;
 			} else {
 				delete trimmedResult.cursorTargetOffset;
 			}

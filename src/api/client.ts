@@ -28,6 +28,12 @@ import {
 	type RecentChange,
 	type UserAction,
 } from "./schemas.ts";
+import {
+	clampEditRangeToCompletion,
+	shrinkEditToCommonAffix,
+	stripRedundantLinePrefix,
+} from "./clamp-edit-range.ts";
+import { reanchorNextLineEditAtCursor } from "./reanchor-edit-at-cursor.ts";
 import { buildSweepResponse } from "./sweep-completion.ts";
 import { buildSweepPrompt } from "./sweep-prompt.ts";
 import { buildZeta2Response } from "./zeta2-completion.ts";
@@ -161,7 +167,7 @@ export class ApiClient {
 			const cursorOffset = input.document.offsetAt(input.position);
 			const results: AutocompleteResult[] = [];
 			for (const response of responses) {
-				const result: AutocompleteResult = {
+				let result: AutocompleteResult = {
 					id: response.autocomplete_id,
 					startIndex: decode(response.start_index),
 					endIndex: decode(response.end_index),
@@ -171,6 +177,23 @@ export class ApiClient {
 						? { cursorTargetOffset: response.cursor_target_offset }
 						: {}),
 				};
+				logger.debug("Raw model edit:", {
+					id: result.id,
+					startIndex: result.startIndex,
+					endIndex: result.endIndex,
+					cursorOffset,
+					completion: JSON.stringify(result.completion.slice(0, 120)),
+				});
+				result = reanchorNextLineEditAtCursor(
+					input.document,
+					input.position,
+					result,
+				);
+				// Collapse whole-line / whole-window re-emits to the minimal
+				// diff so an edit whose range starts before the cursor (which
+				// would render as duplicated ghost text or get misrouted to a
+				// jump box) is pulled forward onto the changed characters.
+				result = shrinkEditToCommonAffix(input.document, result);
 				// If the replacement starts before the cursor on the same
 				// line that contains it, anchor the start at the cursor and
 				// strip the matching prefix from the completion. The
@@ -197,6 +220,16 @@ export class ApiClient {
 						}
 					}
 				}
+				const stripped = stripRedundantLinePrefix(
+					input.document,
+					input.position,
+					result,
+				);
+				if (!stripped) continue;
+				result = stripped;
+				const clamped = clampEditRangeToCompletion(input.document, result);
+				if (!clamped) continue;
+				result = clamped;
 				if (result.completion.length === 0) continue;
 				results.push(result);
 			}
