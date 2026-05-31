@@ -17,7 +17,11 @@ const MAX_FILE_CHUNK_LINES = 60;
 const BULK_CHANGE_LOOKBACK_MS = 1500;
 const BULK_CHANGE_CHAR_THRESHOLD = 200;
 const BULK_CHANGE_LINE_THRESHOLD = 8;
-const SELECTION_LOOKBACK_MS = 5000;
+// Only needs to cover the brief event-ordering race where a multi-line
+// selection is replaced/deleted in a single keystroke (the selection collapses
+// before the provider runs). Once the caret is idle, `trackSelectionChange`
+// clears the marker so deliberate follow-up typing is not blocked.
+const SELECTION_LOOKBACK_MS = 1000;
 
 interface QueuedSuggestionState {
 	uri: string;
@@ -1147,23 +1151,28 @@ export class InlineEditProvider implements vscode.InlineCompletionItemProvider {
 
 	private trimSuffixOverlap(
 		document: vscode.TextDocument,
-		position: vscode.Position,
+		_position: vscode.Position,
 		result: AutocompleteResult,
 	): AutocompleteResult | null {
 		if (!result.completion) return null;
 
-		const cursorOffset = document.offsetAt(position);
+		// Anchor on where the inserted text meets existing document text — the
+		// edit's end — not the cursor. A jump insertion can sit a line below the
+		// cursor; measuring from the cursor would treat the structural newline
+		// separating the cursor line from the inserted block as a duplicate and
+		// trim it, gluing the block's last line onto the following line (`}]`).
+		const endOffset = result.endIndex;
 		const documentLength = document.getText().length;
 		const maxLookahead = Math.min(
-			documentLength - cursorOffset,
+			documentLength - endOffset,
 			result.completion.length,
 		);
 		if (maxLookahead <= 0) return result;
 
 		const followingText = document.getText(
 			new vscode.Range(
-				position,
-				document.positionAt(cursorOffset + maxLookahead),
+				document.positionAt(endOffset),
+				document.positionAt(endOffset + maxLookahead),
 			),
 		);
 

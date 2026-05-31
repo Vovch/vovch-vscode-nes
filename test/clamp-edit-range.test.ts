@@ -3,6 +3,8 @@ import * as vscode from "vscode";
 
 import {
 	clampEditRangeToCompletion,
+	ensureInsertionLineBreak,
+	realignReemittedTrailingContext,
 	shrinkEditToCommonAffix,
 	stripRedundantLinePrefix,
 } from "~/api/clamp-edit-range.ts";
@@ -151,6 +153,172 @@ describe("shrinkEditToCommonAffix", () => {
 			),
 		)).toBe("x");
 		expect(shrunk.completion).toBe("yy");
+	});
+});
+
+describe("realignReemittedTrailingContext", () => {
+	test("turns a truncated re-emit into a clean insertion, preserving closes", () => {
+		const source = [
+			"{",
+			'  "overrides": [',
+			"    {",
+			'      "files": ["*.md"],',
+			'      "rules": {}',
+			"    },",
+			"  ]",
+			"}",
+			"",
+		].join("\r\n");
+		const document = mockDocument(source);
+		// Edit range spans the array close `  ]` and the object close `}`.
+		const startIndex = document.offsetAt(new vscode.Position(6, 0));
+		const endIndex = document.offsetAt(new vscode.Position(7, 1));
+		// Completion re-emits the array close it sits in front of but stops
+		// before the object close.
+		const completion =
+			'\r\n    {\r\n      "files": ["*.css"],\r\n      "rules": {}\r\n    }\r\n  ]\r\n';
+
+		const realigned = realignReemittedTrailingContext(
+			document,
+			result({ startIndex, endIndex, completion }),
+		);
+
+		// Collapsed to a pure insertion at the `  ]` line; no leading blank line.
+		expect(realigned.startIndex).toBe(startIndex);
+		expect(realigned.endIndex).toBe(startIndex);
+		expect(realigned.completion).toBe(
+			'    {\r\n      "files": ["*.css"],\r\n      "rules": {}\r\n    }\r\n',
+		);
+
+		const applied =
+			source.slice(0, realigned.startIndex) +
+			realigned.completion +
+			source.slice(realigned.endIndex);
+		// Both closing tokens survive.
+		expect(applied).toContain("  ]\r\n}");
+		expect(applied).toContain('"files": ["*.css"]');
+	});
+
+	test("leaves a faithful replacement (no re-emit overlap) unchanged", () => {
+		const source = "const x = 1;";
+		const document = mockDocument(source);
+		const unchanged = realignReemittedTrailingContext(
+			document,
+			result({ startIndex: 0, endIndex: source.length, completion: "let y = 2;" }),
+		);
+		expect(unchanged.startIndex).toBe(0);
+		expect(unchanged.endIndex).toBe(source.length);
+		expect(unchanged.completion).toBe("let y = 2;");
+	});
+
+	test("ignores pure insertions (empty range)", () => {
+		const source = ["foo", "bar"].join("\n");
+		const document = mockDocument(source);
+		const at = document.offsetAt(new vscode.Position(0, 3));
+		const unchanged = realignReemittedTrailingContext(
+			document,
+			result({ startIndex: at, endIndex: at, completion: "baz" }),
+		);
+		expect(unchanged.endIndex).toBe(at);
+		expect(unchanged.completion).toBe("baz");
+	});
+});
+
+describe("ensureInsertionLineBreak", () => {
+	test("appends a line break so an inserted block doesn't glue onto `]`", () => {
+		const source = [
+			"[",
+			"    {",
+			'        "id": 2545,',
+			"    },",
+			"]",
+			"",
+		].join("\n");
+		const document = mockDocument(source);
+		const insertAt = document.offsetAt(new vscode.Position(4, 0));
+		const completion = '    {\n        "id": 2546\n    }';
+
+		const fixed = ensureInsertionLineBreak(
+			document,
+			result({ startIndex: insertAt, endIndex: insertAt, completion }),
+		);
+
+		expect(fixed.completion).toBe('    {\n        "id": 2546\n    }\n');
+		const applied =
+			source.slice(0, fixed.startIndex) +
+			fixed.completion +
+			source.slice(fixed.endIndex);
+		expect(applied).toContain("    }\n]");
+		expect(applied).not.toContain("    }]");
+	});
+
+	test("matches CRLF documents", () => {
+		const source = ["[", "    {}", "]", ""].join("\r\n");
+		const document = mockDocument(source);
+		const insertAt = document.offsetAt(new vscode.Position(2, 0));
+		const fixed = ensureInsertionLineBreak(
+			document,
+			result({
+				startIndex: insertAt,
+				endIndex: insertAt,
+				completion: "    {\r\n    }",
+			}),
+		);
+		expect(fixed.completion).toBe("    {\r\n    }\r\n");
+	});
+
+	test("leaves single-line insertions (prepends) untouched", () => {
+		const source = "class Foo {}";
+		const document = mockDocument(source);
+		const fixed = ensureInsertionLineBreak(
+			document,
+			result({ startIndex: 0, endIndex: 0, completion: "export " }),
+		);
+		expect(fixed.completion).toBe("export ");
+	});
+
+	test("strips a spurious leading newline and adds a trailing one", () => {
+		const source = ["[", "    {}", "]", ""].join("\n");
+		const document = mockDocument(source);
+		const insertAt = document.offsetAt(new vscode.Position(2, 0));
+		const fixed = ensureInsertionLineBreak(
+			document,
+			result({
+				startIndex: insertAt,
+				endIndex: insertAt,
+				// Leading newline (model re-emitted the previous break) and no
+				// trailing newline.
+				completion: '\n    {\n        "id": 1\n    }',
+			}),
+		);
+		expect(fixed.completion).toBe('    {\n        "id": 1\n    }\n');
+		const applied =
+			source.slice(0, fixed.startIndex) +
+			fixed.completion +
+			source.slice(fixed.endIndex);
+		expect(applied).not.toContain("\n\n    {");
+		expect(applied).toContain("    }\n]");
+	});
+
+	test("does not double up an existing trailing newline", () => {
+		const source = ["[", "]", ""].join("\n");
+		const document = mockDocument(source);
+		const insertAt = document.offsetAt(new vscode.Position(1, 0));
+		const fixed = ensureInsertionLineBreak(
+			document,
+			result({ startIndex: insertAt, endIndex: insertAt, completion: "{\n}\n" }),
+		);
+		expect(fixed.completion).toBe("{\n}\n");
+	});
+
+	test("ignores non-insertions (replacements)", () => {
+		const source = "const x = 1;";
+		const document = mockDocument(source);
+		const fixed = ensureInsertionLineBreak(
+			document,
+			result({ startIndex: 0, endIndex: 5, completion: "let\nx" }),
+		);
+		expect(fixed.completion).toBe("let\nx");
 	});
 });
 

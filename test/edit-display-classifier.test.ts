@@ -110,4 +110,46 @@ describe("classifyEditDisplay", () => {
 			reason: "multiline-replacement-at-cursor",
 		});
 	});
+
+	test("returns JUMP for an insertion that starts after the cursor on a later line", () => {
+		// Real .eslintrc.json case: cursor at end of `    },` (offset 315,
+		// line 15), model inserts a new override block below (start 319,
+		// line 16). Rendering this as ghost text would detach it on the
+		// lower line where the user can't accept it.
+		const result = classifyEditDisplay({
+			cursorLine: 15,
+			editStartLine: 16,
+			editEndLine: 16,
+			cursorOffset: 315,
+			startIndex: 319,
+			endIndex: 320,
+			completion: '\r\n    {\r\n      "files": ["*.json"],\r\n      "rules": {}\r\n    }',
+			isOnSingleNewlineBoundary: false,
+		});
+
+		expect(result).toEqual({
+			decision: "JUMP",
+			reason: "after-cursor-next-line",
+		});
+	});
+
+	test("keeps INLINE for an edit that starts after the cursor on the same line", () => {
+		// Forward completion on the cursor's own line must still render as
+		// ghost text, not get bounced to a jump edit.
+		const result = classifyEditDisplay({
+			cursorLine: 10,
+			editStartLine: 10,
+			editEndLine: 10,
+			cursorOffset: 200,
+			startIndex: 205,
+			endIndex: 205,
+			completion: "Suffix",
+			isOnSingleNewlineBoundary: false,
+		});
+
+		expect(result).toEqual({
+			decision: "INLINE",
+			reason: "inline-safe",
+		});
+	});
 });

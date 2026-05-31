@@ -8,7 +8,7 @@
 // with diagnostics last so the model sees them adjacent to the edit
 // window.
 //
-//   <|file_sep|>context/rules                NESweep extension; cache-stable
+//   <|file_sep|>context/rules                Vovch Sweep NES extension; cache-stable
 //   {rules body}
 //
 //   <|file_sep|>{path}                       broad file context (~300 lines)
@@ -40,6 +40,7 @@
 // Stop tokens: <|file_sep|>, <|endoftext|>.
 
 import type { MessageTransform } from "~/core/config.ts";
+import { utf8ByteOffsetToUtf16Offset } from "~/utils/text.ts";
 import type { ModelPrompt } from "./model-format.ts";
 import type {
 	AutocompleteRequest,
@@ -193,7 +194,7 @@ export function buildSweepPrompt(
 	const startLine1 = windowStartLine + 1;
 	const endLine1 = windowEndLine;
 
-	const relativeCursor = relativeCursorByte(
+	const relativeCursor = relativeCursorOffset(
 		promptLines,
 		windowStartLine,
 		cursorLine,
@@ -336,17 +337,25 @@ export function locateCursor(
 	return { line: last, col: cursorByte - start };
 }
 
-function relativeCursorByte(
+// Returns the cursor's position as a UTF-16 code-unit index into the joined
+// window text (`lines[windowStart..]` joined by "\n"). `cursorColBytes` is a
+// UTF-8 byte offset within the cursor line (as produced by locateCursor),
+// so it must be converted to UTF-16 before it can index a JS string via
+// String.prototype.slice — otherwise every multibyte character (Cyrillic,
+// CJK, emoji, …) before the cursor inflates the offset and pushes the
+// <|cursor|> marker / prefill past the real caret.
+function relativeCursorOffset(
 	lines: string[],
 	windowStart: number,
 	cursorLine: number,
-	cursorCol: number,
+	cursorColBytes: number,
 ): number {
 	let off = 0;
 	for (let i = windowStart; i < cursorLine; i++) {
-		off += Buffer.byteLength(lines[i] ?? "", "utf8") + 1;
+		off += (lines[i] ?? "").length + 1; // UTF-16 units + 1 for '\n'
 	}
-	return off + cursorCol;
+	const lineText = lines[cursorLine] ?? "";
+	return off + utf8ByteOffsetToUtf16Offset(lineText, cursorColBytes);
 }
 
 function buildBroadContext(

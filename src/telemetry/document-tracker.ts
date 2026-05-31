@@ -16,7 +16,7 @@ const LEGACY_STATE_KEY_V1 = "sweep.tracker.v1";
 // panel (`output:`), SCM diff editors (`vscode-scm:`), settings.json
 // (`vscode-userdata:`), git history views (`git:`), search results,
 // notebook scratchpads, etc. — is ignored so it doesn't show up as a
-// "recent file" in the prompt (e.g. `<|file_sep|>SR-team.nesweep.NESweep.log`
+// "recent file" in the prompt (e.g. `<|file_sep|>vovch.vovch-sweep-nes.Vovch Sweep NES.log`
 // when the user peeks at the Output panel).
 const TRACKABLE_SCHEMES = new Set(["file", "untitled", "vscode-remote"]);
 
@@ -296,8 +296,20 @@ export class DocumentTracker implements vscode.Disposable {
 			}
 		}
 
+		const uri = document.uri.toString();
 		if (hasMultiLine) {
-			this.lastMultiLineSelections.set(document.uri.toString(), Date.now());
+			this.lastMultiLineSelections.set(uri, Date.now());
+			this.scheduleSave();
+			return;
+		}
+
+		// The selection collapsed back to plain (single-line / empty) carets:
+		// the user is done working with the multi-line selection. Clear the
+		// recent-selection marker so a deliberate follow-up edit (e.g. deleting
+		// the selected lines and typing) isn't blocked for the rest of the
+		// lookback window.
+		const allCollapsed = selections.every((s) => s.isEmpty);
+		if (allCollapsed && this.lastMultiLineSelections.delete(uri)) {
 			this.scheduleSave();
 		}
 	}

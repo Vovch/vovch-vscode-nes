@@ -24,7 +24,7 @@ let completionServer: CompletionServer;
 
 export function activate(context: vscode.ExtensionContext) {
 	const logChannel = initLogger();
-	logger.info("NESweep activated");
+	logger.info("Vovch Sweep NES activated");
 	initSyntaxHighlighter();
 
 	tracker = new DocumentTracker(context);
@@ -46,7 +46,7 @@ export function activate(context: vscode.ExtensionContext) {
 	const triggerCommand = vscode.commands.registerCommand(
 		"sweep.triggerNextEdit",
 		() => {
-			vscode.commands.executeCommand("editor.action.inlineEdit.trigger");
+			vscode.commands.executeCommand("editor.action.inlineSuggest.trigger");
 		},
 	);
 

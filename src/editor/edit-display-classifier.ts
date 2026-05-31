@@ -8,6 +8,7 @@ export interface EditDisplayClassification {
 		| "before-cursor-single-line"
 		| "single-newline-boundary"
 		| "multiline-replacement-at-cursor"
+		| "after-cursor-next-line"
 		| "inline-safe";
 }
 
@@ -84,6 +85,23 @@ export function classifyEditDisplay(
 		return {
 			decision: "JUMP",
 			reason: "multiline-replacement-at-cursor",
+		};
+	}
+
+	// An edit that starts after the cursor but on a later line can't render
+	// as ghost text at the caret — VSCode draws it detached on the lower
+	// line, where the user can't Tab-accept it inline, so it appears to be
+	// silently ignored. This is the symmetric counterpart to the
+	// before-cursor rules above; route it to a jump edit so the user gets a
+	// visible "→ Edit at line N (Tab ✓)" affordance. Common case: inserting
+	// a new array/object element a line or two below the cursor.
+	if (
+		input.startIndex > input.cursorOffset &&
+		input.editStartLine > input.cursorLine
+	) {
+		return {
+			decision: "JUMP",
+			reason: "after-cursor-next-line",
 		};
 	}
 

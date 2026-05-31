@@ -29,7 +29,7 @@ export class RulesDiagnostics implements vscode.Disposable {
 
 	constructor() {
 		this.collection =
-			vscode.languages.createDiagnosticCollection("nesweep-rules");
+			vscode.languages.createDiagnosticCollection("vovch-sweep-nes-rules");
 		this.decoration = vscode.window.createTextEditorDecorationType({
 			backgroundColor: new vscode.ThemeColor("inputValidation.errorBackground"),
 			overviewRulerColor: new vscode.ThemeColor("editorError.foreground"),
@@ -80,10 +80,10 @@ export class RulesDiagnostics implements vscode.Disposable {
 		const overBy = length - limit;
 		const diag = new vscode.Diagnostic(
 			range,
-			`NESweep rules: ${length} chars, ${overBy} over limit (${limit}).`,
+			`Vovch Sweep NES rules: ${length} chars, ${overBy} over limit (${limit}).`,
 			vscode.DiagnosticSeverity.Warning,
 		);
-		diag.source = "NESweep";
+		diag.source = "Vovch Sweep NES";
 		this.collection.set(doc.uri, [diag]);
 		this.overLimit.set(key, range);
 		this.applyDecorations();

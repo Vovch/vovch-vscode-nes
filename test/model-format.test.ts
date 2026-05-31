@@ -69,6 +69,34 @@ describe("buildSweepPrompt", () => {
 		expect(result.prompt).toContain("<|file_sep|>updated/src/foo.ts");
 		expect(result.prompt).toContain("<|cursor|>");
 	});
+
+	test("places <|cursor|> at the caret when Cyrillic precedes it", () => {
+		const fileContents = "// Привет мир\nlet значение = 42;\n";
+		const beforeCursor = "// Привет мир\nlet значение";
+		const cursorPosition = Buffer.byteLength(beforeCursor, "utf8");
+		const result = buildSweepPrompt(
+			makeRequest({
+				file_contents: fileContents,
+				cursor_position: cursorPosition,
+			}),
+		);
+		// The marker must land exactly after `let значение`, not be pushed
+		// forward by the inflated UTF-8 byte offset of the Cyrillic text.
+		expect(result.prompt).toContain("let значение<|cursor|> = 42;");
+	});
+
+	test("places <|cursor|> at the caret with astral-plane chars (emoji) before it", () => {
+		const fileContents = "const a = '😀😀';\nconst b = 1;\n";
+		const beforeCursor = "const a = '😀😀';\nconst b";
+		const cursorPosition = Buffer.byteLength(beforeCursor, "utf8");
+		const result = buildSweepPrompt(
+			makeRequest({
+				file_contents: fileContents,
+				cursor_position: cursorPosition,
+			}),
+		);
+		expect(result.prompt).toContain("const b<|cursor|> = 1;");
+	});
 });
 
 describe("buildZeta2Prompt", () => {
@@ -111,6 +139,19 @@ describe("buildZeta2Prompt", () => {
 		// Editable window: [50-15, 50+15+1) = [35, 66)
 		expect(result.windowStartLine).toBe(35);
 		expect(result.windowEndLine).toBe(66);
+	});
+
+	test("places <|user_cursor|> at the caret when multibyte chars precede it", () => {
+		const fileContents = "// Привет мир\nlet значение = 42;\n";
+		const beforeCursor = "// Привет мир\nlet значение";
+		const cursorPosition = Buffer.byteLength(beforeCursor, "utf8");
+		const result = buildZeta2Prompt(
+			makeRequest({
+				file_contents: fileContents,
+				cursor_position: cursorPosition,
+			}),
+		);
+		expect(result.prompt).toContain("let значение<|user_cursor|> = 42;");
 	});
 
 	test("protocolVersion 2.1 swaps to <|marker_1|> / <|marker_2|>", () => {

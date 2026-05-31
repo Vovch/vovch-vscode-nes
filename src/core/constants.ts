@@ -5,7 +5,10 @@ export const DEFAULT_MAX_CONTEXT_FILES = 5;
 // across other recent files (capped by DEFAULT_MAX_CONTEXT_FILES), the
 // remainder fills from the active file's recent activity.
 export const DEFAULT_MAX_EDIT_HISTORY = 15;
-export const DEFAULT_SERVER_URL = "http://localhost:8080";
+// Ollama's OpenAI-compatible endpoint (http://localhost:11434/v1/completions)
+// is the default provider. Point this at llama.cpp's llama-server
+// (http://localhost:8080), vLLM, sglang, etc. to switch backends.
+export const DEFAULT_SERVER_URL = "http://localhost:11434";
 export const DEFAULT_COMPLETION_TIMEOUT_MS = 10_000;
 // Drop diagnostics whose line is more than this many lines from the cursor.
 // VSCode hands us the entire file's diagnostic set per request; keeping all

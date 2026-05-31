@@ -30,6 +30,8 @@ import {
 } from "./schemas.ts";
 import {
 	clampEditRangeToCompletion,
+	ensureInsertionLineBreak,
+	realignReemittedTrailingContext,
 	shrinkEditToCommonAffix,
 	stripRedundantLinePrefix,
 } from "./clamp-edit-range.ts";
@@ -152,7 +154,7 @@ export class ApiClient {
 			);
 			logger.trace("← /v1/completions raw response:", completion.text);
 
-			const id = `nesweep-${Date.now()}-${++this.idCounter}`;
+			const id = `vovch-sweep-nes-${Date.now()}-${++this.idCounter}`;
 			let responses: AutocompleteResponse[] | null;
 			if (format === "zeta2" || format === "zeta2.1") {
 				responses = buildZeta2Response(completion, prompt, id);
@@ -194,6 +196,11 @@ export class ApiClient {
 				// would render as duplicated ghost text or get misrouted to a
 				// jump box) is pulled forward onto the changed characters.
 				result = shrinkEditToCommonAffix(input.document, result);
+				// Recover the intended insertion when the model re-emits trailing
+				// document context (e.g. an array/object close) but truncates real
+				// closing structure — applying the raw range would delete code the
+				// completion never reproduces.
+				result = realignReemittedTrailingContext(input.document, result);
 				// If the replacement starts before the cursor on the same
 				// line that contains it, anchor the start at the cursor and
 				// strip the matching prefix from the completion. The
@@ -231,6 +238,10 @@ export class ApiClient {
 				if (!clamped) continue;
 				result = clamped;
 				if (result.completion.length === 0) continue;
+				// A multi-line block inserted at column 0 must keep its trailing
+				// line break, else the following line (e.g. an array close `]`)
+				// is glued onto the block's last line (`}]`).
+				result = ensureInsertionLineBreak(input.document, result);
 				results.push(result);
 			}
 			if (results.length === 0) return null;
@@ -558,9 +569,9 @@ export class ApiClient {
 
 	getDebugInfo(): string {
 		const extensionVersion =
-			vscode.extensions.getExtension("sr-tream.nesweep")?.packageJSON
+			vscode.extensions.getExtension("vovch.vovch-sweep-nes")?.packageJSON
 				?.version ?? "unknown";
-		return `VSCode (${vscode.version}) - OS: ${os.platform()} ${os.arch()} - NESweep v${extensionVersion}`;
+		return `VSCode (${vscode.version}) - OS: ${os.platform()} ${os.arch()} - Vovch Sweep NES v${extensionVersion}`;
 	}
 
 	private getRepoName(document: vscode.TextDocument): string {

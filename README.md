@@ -1,13 +1,14 @@
-## NESweep — Next Edit autocompletion for VSCode
+## Vovch Sweep NES — Next Edit autocompletion for VSCode
 
 <img width="563" height="327" alt="image" src="https://github.com/user-attachments/assets/9a06ed4a-bf9b-41e0-a21b-2178cb2c67b9" />
 
-NESweep is a fork of [Sweep Next Edit](https://github.com/sweepai/vscode-nes)
+Vovch Sweep NES is a fork of [Sweep Next Edit](https://github.com/sweepai/vscode-nes)
 that retargets the extension at a local OpenAI-compatible
-`/v1/completions` server (e.g. llama.cpp's `llama-server`) running an
-edit-prediction model. The upstream `uvx sweep-autocomplete` Python
-child process — which falls back to CPU and is unusable for next-edit
-latency — is removed.
+`/v1/completions` server running an edit-prediction model. It defaults to
+[Ollama](https://ollama.com) (`http://localhost:11434`) and works equally
+well with llama.cpp's `llama-server`, vLLM, or sglang. The upstream
+`uvx sweep-autocomplete` Python child process — which falls back to CPU
+and is unusable for next-edit latency — is removed.
 
 ## Features
 
@@ -21,22 +22,22 @@ latency — is removed.
   suppression below a root-cause line, and user-configurable regex
   rewrites on the messages (clang / clang-tidy presets included).
 - **Per-language workspace rules.** `.vscode/nes-<languageId>.md`
-  is editable from the NESweep status-bar menu with a configurable
+  is editable from the Vovch Sweep NES status-bar menu with a configurable
   soft-cap warning when the file grows large enough to bloat latency.
 - **Cache-friendly + persistent.** Stable content emitted first /
   volatile last for maximum prefix-cache hits; recent files, edits,
   and cursor positions survive window reload via `workspaceState`,
   so the model has context immediately after restart.
 - **Status-bar menu + trace logging.** Toggle, snooze, ping server,
-  edit instructions. Set the NESweep output channel to `Trace`
-  (`Developer: Set Log Level… → NESweep`) for full request/response
+  edit instructions. Set the Vovch Sweep NES output channel to `Trace`
+  (`Developer: Set Log Level… → Vovch Sweep NES`) for full request/response
   visibility.
 
 ## Settings
 
 | Key | Default | Purpose |
 | --- | --- | --- |
-| `sweep.serverUrl` | `http://localhost:8080` | `/v1/completions` base URL |
+| `sweep.serverUrl` | `http://localhost:11434` | `/v1/completions` base URL (defaults to Ollama) |
 | `sweep.modelName` | `sweepai/sweep-next-edit` | `model` field in the request body; substring-matched to pick the prompt format |
 | `sweep.completionTimeoutMs` | `10000` | Per-request timeout (ms) |
 | `sweep.diagRadius` | `12` | ±N lines around cursor; `0` disables |
@@ -50,7 +51,51 @@ latency — is removed.
 ## Setup
 
 Run any supported edit-prediction GGUF behind an OpenAI-compatible
-`/v1/completions` server. Examples with llama.cpp:
+`/v1/completions` server.
+
+### Ollama (default)
+
+The extension ships pointing at Ollama's OpenAI-compatible endpoint
+(`http://localhost:11434`), so no `sweep.serverUrl` change is needed.
+
+1. **Install Ollama** from [ollama.com](https://ollama.com).
+
+2. **Pull an edit-prediction model.** Ollama can pull GGUFs straight
+   from Hugging Face:
+
+   ```sh
+   # Sweep next-edit (default; 7B works without the inline-diagnostics hack)
+   ollama pull hf.co/sweepai/sweep-next-edit-7b-gguf
+
+   # Sweep 1.5B (smaller, faster — turn on sweep.injectInlineDiagnostics)
+   ollama pull hf.co/sweepai/sweep-next-edit-1.5b-gguf
+   ```
+
+3. **Serve with a large context window.** Sweep prompts routinely run
+   15–20k tokens, but Ollama's default context (a few thousand tokens)
+   would silently truncate them and corrupt completions. Set the
+   context length before starting the server:
+
+   ```sh
+   # Linux / macOS
+   OLLAMA_CONTEXT_LENGTH=32768 ollama serve
+
+   # Windows (PowerShell)
+   $env:OLLAMA_CONTEXT_LENGTH=32768; ollama serve
+   ```
+
+   (If Ollama already runs as a background service, set
+   `OLLAMA_CONTEXT_LENGTH` in its environment and restart it. Alternatively
+   bake `PARAMETER num_ctx 32768` into a custom `Modelfile`.)
+
+4. **Set `sweep.modelName`** to the tag Ollama reports, e.g.
+   `hf.co/sweepai/sweep-next-edit-7b-gguf` (run `ollama list` to confirm).
+   The name is substring-matched to pick the prompt format (see below).
+
+### llama.cpp / vLLM / sglang
+
+Set `sweep.serverUrl` to the server's base URL (llama.cpp's `llama-server`
+defaults to `http://localhost:8080`). Examples with llama.cpp:
 
 ```sh
 # Sweep next-edit (default; 7B works without the inline-diagnostics hack)

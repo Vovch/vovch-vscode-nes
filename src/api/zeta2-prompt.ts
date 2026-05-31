@@ -49,6 +49,7 @@ import type {
 	EditorDiagnostic,
 	FileChunk,
 } from "./schemas.ts";
+import { utf8ByteOffsetToUtf16Offset } from "~/utils/text.ts";
 import {
 	computeLineByteOffsets,
 	locateCursor,
@@ -217,7 +218,7 @@ export function buildZeta2Prompt(
 	// Workspace rules pseudo-file first inside the prefix block. Rules
 	// are session-stable (only change when the user edits
 	// .vscode/nes-{lang}.md) while every later pseudo-file is volatile,
-	// so this maximises prefix-cache reuse across requests. NESweep
+	// so this maximises prefix-cache reuse across requests. Vovch Sweep NES
 	// extension — cursortab's zeta2 has no equivalent slot.
 	if (opts.rules !== "") {
 		body += `${FILE_MARKER}context/rules\n${opts.rules}`;
@@ -485,7 +486,10 @@ function formatEditableWithCursor(
 
 	const out = editLines.slice();
 	const line = out[relLine] ?? "";
-	let col = cursorCol;
+	// cursorCol is a UTF-8 byte offset within the line; convert to a UTF-16
+	// code-unit index so the marker lands at the real caret even when the
+	// line contains multibyte characters (Cyrillic, CJK, emoji, …).
+	let col = utf8ByteOffsetToUtf16Offset(line, cursorCol);
 	if (col > line.length) col = line.length;
 	if (col < 0) col = 0;
 	out[relLine] = line.slice(0, col) + ZETA2_CURSOR_MARKER + line.slice(col);

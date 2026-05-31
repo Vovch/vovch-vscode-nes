@@ -39,7 +39,7 @@ export class CompletionServer implements vscode.Disposable {
 		this.warned = true;
 		this.lastWarningAt = now;
 		vscode.window.showWarningMessage(
-			`NESweep: completion server is not reachable at ${config.serverUrl}. ` +
+			`Vovch Sweep NES: completion server is not reachable at ${config.serverUrl}. ` +
 				"Start an OpenAI-compatible /v1/completions server (e.g. llama-server) " +
 				"with the sweep model loaded.",
 		);
